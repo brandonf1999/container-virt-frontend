@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+.dist/
+dist/
+.vite/
+.vite-inspect/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Testing / coverage
+coverage/
+.vitest/
+
+# Tooling and editor settings
+.idea/
+.vscode/
+*.code-workspace
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+Thumbs.db
