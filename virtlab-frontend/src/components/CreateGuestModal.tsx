@@ -42,7 +42,7 @@ type IsoState =
 
 const VCPU_PRESETS = [1, 2, 4, 8];
 const MEMORY_PRESETS_MB = [1024, 2048, 4096, 8192, 16384];
-const VNC_PASSWORD_LENGTH = 16;
+const VNC_PASSWORD_LENGTH = 8;
 const VNC_PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 function generateVncPassword(length = VNC_PASSWORD_LENGTH) {
