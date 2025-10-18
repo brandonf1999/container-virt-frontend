@@ -131,7 +131,7 @@ export function PhysicalHostsPage({ hosts, isLoading, error, onRefresh }: Physic
       <header className="page-header">
         <div>
           <h1>Physical Hosts</h1>
-          <p className="page-header__subtitle">Current compute and memory utilisation per libvirt host.</p>
+          <p className="page-header__subtitle">Current compute and memory utilization per libvirt host.</p>
         </div>
         <button type="button" className="refresh-button" onClick={onRefresh} disabled={isLoading}>
           {isLoading ? "Refreshing…" : "Refresh"}

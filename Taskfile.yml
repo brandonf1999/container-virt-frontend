@@ -22,7 +22,7 @@ vars:
   DEV_PORT:        "{{.DEV_PORT | default `5173`}}"
 
   # Other vars
-  VITE_API_URL:    "{{.VITE_API_URL | default `http://virtlab.foos.net`}}"
+  VITE_API_URL:    "{{.VITE_API_URL | default `https://virtlab.foos.net`}}"
   VITE_API_URL_DEV:    "{{.VITE_API_URL_DEV | default `http://localhost:8000`}}"
   CONTEXT:         "{{.CONTEXT | default `.`}}"
   CONTAINERFILE:   "{{.CONTAINERFILE | default `Containerfile`}}"

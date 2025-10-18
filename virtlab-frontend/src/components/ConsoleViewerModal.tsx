@@ -32,7 +32,18 @@ type ConsoleViewerModalProps = {
   powerControls?: ConsolePowerControls | null;
 };
 
-type RfbConstructor = typeof import("@novnc/novnc/core/rfb").default;
+type RfbInstance = {
+  viewOnly: boolean;
+  scaleViewport: boolean;
+  background: string;
+  focusOnClick: boolean;
+  dragViewport: boolean;
+  disconnect: () => void;
+  addEventListener: (type: string, listener: (event: Event) => void) => void;
+  removeEventListener: (type: string, listener: (event: Event) => void) => void;
+};
+
+type RfbConstructor = new (target: HTMLElement, url: string, options: { credentials: { password: string } }) => RfbInstance;
 
 declare global {
   interface Window {
@@ -69,14 +80,19 @@ async function loadRfbClass(): Promise<RfbConstructor> {
     return window.__virtlabRFB;
   }
   const imported = await import("@novnc/novnc/lib/rfb.js");
-  const RFBClass = (imported as { default: RfbConstructor }).default ?? (imported as any).RFB ?? (imported as RfbConstructor);
+  const moduleDefault = (imported as { default?: RfbConstructor }).default;
+  const fallbackExport = (imported as { RFB?: RfbConstructor }).RFB;
+  const RFBClass = moduleDefault ?? fallbackExport;
+  if (!RFBClass) {
+    throw new Error("noVNC RFB constructor unavailable");
+  }
   window.__virtlabRFB = RFBClass;
   return RFBClass;
 }
 
 export function ConsoleViewerModal({ isOpen, session, target, onClose, powerControls }: ConsoleViewerModalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const rfbRef = useRef<any>(null);
+  const rfbRef = useRef<RfbInstance | null>(null);
   const [status, setStatus] = useState<ConsoleStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -137,6 +153,7 @@ export function ConsoleViewerModal({ isOpen, session, target, onClose, powerCont
       return;
     }
 
+    const activeSession = session;
     let cancelled = false;
     let disconnectHandler: ((event: Event) => void) | null = null;
     let connectHandler: ((event: Event) => void) | null = null;
@@ -145,7 +162,7 @@ export function ConsoleViewerModal({ isOpen, session, target, onClose, powerCont
       setStatus("connecting");
       setError(null);
 
-      const wsUrl = buildConsoleWebSocketUrl(session.websocket_path);
+      const wsUrl = buildConsoleWebSocketUrl(activeSession.websocket_path);
       if (!wsUrl) {
         throw new Error("Unable to resolve console endpoint");
       }
@@ -159,7 +176,7 @@ export function ConsoleViewerModal({ isOpen, session, target, onClose, powerCont
       if (cancelled) return;
 
       const rfbInstance = new RFBClass(canvas, wsUrl, {
-        credentials: { password: session.password },
+        credentials: { password: activeSession.password },
       });
       rfbInstance.viewOnly = false;
       rfbInstance.scaleViewport = true;
@@ -274,7 +291,7 @@ export function ConsoleViewerModal({ isOpen, session, target, onClose, powerCont
         containerRef.current.replaceChildren();
       }
     };
-  }, [isOpen, session]);
+  }, [addEntry, isOpen, openPanel, session, target, targetLabel, updateEntry]);
 
   if (!isOpen) return null;
 
@@ -334,7 +351,7 @@ export function ConsoleViewerModal({ isOpen, session, target, onClose, powerCont
               {isFullscreen ? "Exit full screen" : "Full screen"}
             </button>
             <button type="button" className="modal__close" onClick={handleClose} aria-label="Close console viewer">
-            ×
+              ×
             </button>
           </div>
         </header>

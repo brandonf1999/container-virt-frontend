@@ -1076,6 +1076,20 @@ export function VirtualHostDetailsPage() {
       if (interfaces.length === 0) {
         return <div className="panel__status">No interfaces reported.</div>;
       }
+
+      const sanitizeAddresses = (values?: string[]) => {
+        if (!Array.isArray(values)) return [] as string[];
+        return values.filter((value) => {
+          if (typeof value !== "string") return false;
+          const trimmed = value.trim();
+          if (!trimmed) return false;
+          if (trimmed.startsWith("127.")) return false;
+          if (trimmed === "::1") return false;
+          if (trimmed.toLowerCase().startsWith("::ffff:127.")) return false;
+          return true;
+        });
+      };
+
       return (
         <div className="table-wrapper">
           <table className="hosts-table hosts-table--metrics">
@@ -1083,7 +1097,7 @@ export function VirtualHostDetailsPage() {
               <tr>
                 <th>Interface</th>
                 <th>MAC</th>
-                <th>Addresses</th>
+                <th>IP Addresses</th>
                 <th>Rx</th>
                 <th>Tx</th>
                 <th>Errors</th>
@@ -1099,8 +1113,9 @@ export function VirtualHostDetailsPage() {
                         const prefix = (addr as { prefix?: number }).prefix;
                         return ip ? `${ip}${prefix ? `/${prefix}` : ""}` : null;
                       })
-                      .filter(Boolean)
+                      .filter((value): value is string => typeof value === "string" && value.length > 0)
                   : [];
+                const cleanedAddresses = sanitizeAddresses(addresses);
                 const rxBytes = iface.stats ? formatBytes(iface.stats.rx_bytes ?? 0) : "--";
                 const txBytes = iface.stats ? formatBytes(iface.stats.tx_bytes ?? 0) : "--";
                 const rxPackets = iface.stats?.rx_packets ?? 0;
@@ -1110,7 +1125,7 @@ export function VirtualHostDetailsPage() {
                   <tr key={key}>
                     <td>{iface.target ?? "--"}</td>
                     <td>{iface.mac ?? "--"}</td>
-                    <td>{addresses.length ? addresses.join(", ") : "--"}</td>
+                    <td>{cleanedAddresses.length ? cleanedAddresses.join(", ") : "--"}</td>
                     <td>{iface.stats ? `${rxBytes} (${rxPackets} pkts)` : "--"}</td>
                     <td>{iface.stats ? `${txBytes} (${txPackets} pkts)` : "--"}</td>
                     <td>{iface.stats ? errorCount : "--"}</td>

@@ -57,9 +57,10 @@ export function CloneGuestModal({
   }, [isSubmitting, onBusyChange]);
 
   const normalizedState = useMemo(() => {
-    const state = details?.state ?? (details?.dominfo && (details.dominfo as Record<string, string>).state);
-    return (state ?? "").toString().toLowerCase();
-  }, [details]);
+    const dominfoState = typeof details?.dominfo?.state === "number" ? details.dominfo.state : undefined;
+    const state = details?.state ?? dominfoState;
+    return state == null ? "" : String(state).toLowerCase();
+  }, [details?.state, details?.dominfo]);
 
   const stateMeta = useMemo(() => classifyVmState(details?.state), [details?.state]);
   const isRunning = normalizedState === "running" || normalizedState === "blocked";

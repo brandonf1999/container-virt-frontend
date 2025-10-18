@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createGuestHost, uploadIso } from "../api";
-import type { CreateGuestPayload } from "../types";
+import type { CreateGuestPayload, GuestVolumeInput } from "../types";
 import { useClusterStorage } from "../hooks/useClusterStorage";
 import { useClusterNetworks } from "../hooks/useClusterNetworks";
 import { formatBytes, formatMemory } from "../utils/formatters";
@@ -13,11 +13,15 @@ type CreateGuestModalProps = {
   defaultHost?: string;
 };
 
+type VolumeMode = "new" | "existing";
+
 type VolumeState = {
   name: string;
   pool: string;
   sizeMb: number;
   format: "qcow2" | "raw" | "vmdk";
+  mode: VolumeMode;
+  existingVolume?: string;
 };
 
 type IsoState =
@@ -38,6 +42,23 @@ type IsoState =
 
 const VCPU_PRESETS = [1, 2, 4, 8];
 const MEMORY_PRESETS_MB = [1024, 2048, 4096, 8192, 16384];
+const VNC_PASSWORD_LENGTH = 16;
+const VNC_PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+function generateVncPassword(length = VNC_PASSWORD_LENGTH) {
+  const alphabet = VNC_PASSWORD_ALPHABET;
+  const randomValues = new Uint32Array(length);
+
+  if (typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(randomValues);
+  } else {
+    for (let index = 0; index < randomValues.length; index += 1) {
+      randomValues[index] = Math.floor(Math.random() * alphabet.length);
+    }
+  }
+
+  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join("");
+}
 
 export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHost }: CreateGuestModalProps) {
   const [hostName, setHostName] = useState(defaultHost ?? hosts[0] ?? "");
@@ -47,12 +68,12 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
   const [powerOn, setPowerOn] = useState(true);
   const [vcpus, setVcpus] = useState(2);
   const [memoryMb, setMemoryMb] = useState(2048);
-  const [disk, setDisk] = useState<VolumeState>({ name: "disk0", pool: "", sizeMb: 20 * 1024, format: "qcow2" });
+  const [disk, setDisk] = useState<VolumeState>({ name: "disk0", pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new" });
   const [iso, setIso] = useState<IsoState>({ enabled: false, pool: "" });
   const [network, setNetwork] = useState<string>("");
   const [macAddress, setMacAddress] = useState("");
-  const [vncEnabled, setVncEnabled] = useState(false);
-  const [vncPassword, setVncPassword] = useState("");
+  const [vncEnabled, setVncEnabled] = useState(true);
+  const [vncPassword, setVncPassword] = useState(() => generateVncPassword());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -76,6 +97,16 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
     return poolVolumes.map((volume) => volume.name).sort();
   }, [hostName, iso.enabled, iso.pool, storageHosts]);
 
+  const diskVolumeOptions = useMemo(() => {
+    if (!hostName || !disk.pool) return [] as string[];
+    const inventory = storageHosts[hostName];
+    if (!inventory) return [];
+    const poolExists = inventory.pools.some((pool) => pool.name === disk.pool);
+    if (!poolExists) return [];
+    const poolVolumes = (inventory.volumes ?? []).filter((volume) => volume.pool === disk.pool);
+    return poolVolumes.map((volume) => volume.name).sort();
+  }, [hostName, storageHosts, disk.pool]);
+
   const availableNetworks = useMemo(() => {
     if (!hostName) return [] as string[];
     const inventory = networkHosts[hostName];
@@ -95,12 +126,12 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
       setPowerOn(true);
       setVcpus(2);
       setMemoryMb(2048);
-      setDisk({ name: "disk0", pool: "", sizeMb: 20 * 1024, format: "qcow2" });
+      setDisk({ name: "disk0", pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new", existingVolume: undefined });
       setIso({ enabled: false, pool: "" });
       setNetwork("");
       setMacAddress("");
-      setVncEnabled(false);
-      setVncPassword("");
+      setVncEnabled(true);
+      setVncPassword(() => generateVncPassword());
       setFormError(null);
       setIsSubmitting(false);
     }
@@ -123,6 +154,21 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
       return prev;
     });
   }, [availableNetworks, isOpen, storagePools]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setDisk((prev) => {
+      if (prev.mode !== "existing") return prev;
+      if (diskVolumeOptions.length === 0) {
+        if (prev.existingVolume === undefined) return prev;
+        return { ...prev, existingVolume: undefined };
+      }
+      if (prev.existingVolume && diskVolumeOptions.includes(prev.existingVolume)) {
+        return prev;
+      }
+      return { ...prev, existingVolume: diskVolumeOptions[0] };
+    });
+  }, [diskVolumeOptions, isOpen]);
 
   const updateIso = useCallback((updater: (state: IsoState) => IsoState) => {
     setIso((current) => updater(current));
@@ -208,7 +254,11 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
     if (!hostName) return "Select a host";
     if (!guestName.trim()) return "Guest name is required";
     if (!disk.pool) return "Choose a storage pool for the disk";
-    if (!disk.sizeMb || disk.sizeMb <= 0) return "Disk size must be positive";
+    if (disk.mode === "new") {
+      if (!disk.sizeMb || disk.sizeMb <= 0) return "Disk size must be positive";
+    } else if (!disk.existingVolume) {
+      return "Select an existing volume to attach";
+    }
     if (!network && availableNetworks.length > 0) return "Choose a network";
     if (iso.enabled) {
       if (!iso.pool) return "Choose a pool for the ISO";
@@ -232,6 +282,20 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
     }
     if (!hostName) return;
 
+    const diskVolume: GuestVolumeInput = {
+      name: disk.name.trim() || "disk0",
+      pool: disk.pool,
+      type: "disk",
+      boot: !iso.enabled,
+    };
+
+    if (disk.mode === "existing" && disk.existingVolume) {
+      diskVolume.source_volume = disk.existingVolume;
+    } else {
+      diskVolume.size_mb = disk.sizeMb;
+      diskVolume.format = disk.format;
+    }
+
     const payload: CreateGuestPayload = {
       name: guestName.trim(),
       description: description.trim() || undefined,
@@ -240,14 +304,7 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
       vcpus,
       memory_mb: memoryMb,
       volumes: [
-        {
-          name: disk.name.trim() || "disk0",
-          pool: disk.pool,
-          type: "disk",
-          size_mb: disk.sizeMb,
-          format: disk.format,
-          boot: !iso.enabled,
-        },
+        diskVolume,
         ...(iso.enabled && iso.volume
           ? [
               {
@@ -375,29 +432,20 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
                 <input
                   type="checkbox"
                   checked={vncEnabled}
-                  onChange={(event) => setVncEnabled(event.target.checked)}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    setVncEnabled(enabled);
+                    if (enabled) {
+                      setVncPassword((current) => current || generateVncPassword());
+                    }
+                  }}
                   disabled={disableForm}
                 />
                 Enable VNC console access
               </label>
             </div>
 
-            {vncEnabled && (
-              <div className="modal__field">
-                <label htmlFor="create-vnc-password">VNC password</label>
-                <input
-                  id="create-vnc-password"
-                  type="password"
-                  value={vncPassword}
-                  minLength={6}
-                  maxLength={64}
-                  autoComplete="new-password"
-                  placeholder="6-64 ASCII characters"
-                  onChange={(event) => setVncPassword(event.target.value)}
-                  disabled={disableForm}
-                />
-              </div>
-            )}
+            {vncEnabled && <p className="modal__field-note">Password is generated automatically when the console is enabled.</p>}
 
             <div className="create-guest-simple__grid">
               <div className="modal__field">
@@ -485,6 +533,60 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
                   ))}
                 </select>
               </div>
+              <div className="modal__field">
+                <label htmlFor="create-disk-mode">Disk source</label>
+                <select
+                  id="create-disk-mode"
+                  value={disk.mode}
+                  onChange={(event) => {
+                    const nextMode = event.target.value as VolumeMode;
+                    setDisk((prev) => {
+                      if (nextMode === "existing") {
+                        const firstVolume = diskVolumeOptions[0];
+                        return {
+                          ...prev,
+                          mode: nextMode,
+                          existingVolume: firstVolume,
+                        };
+                      }
+                      return {
+                        ...prev,
+                        mode: nextMode,
+                        existingVolume: undefined,
+                      };
+                    });
+                  }}
+                  disabled={disableForm}
+                >
+                  <option value="new">Create new volume</option>
+                  <option value="existing" disabled={diskVolumeOptions.length === 0}>
+                    Attach existing volume
+                  </option>
+                </select>
+                {disk.mode === "existing" && diskVolumeOptions.length === 0 && (
+                  <p className="modal__field-note">No volumes available in this pool.</p>
+                )}
+              </div>
+              {disk.mode === "existing" && (
+                <div className="modal__field">
+                  <label htmlFor="create-disk-existing">Existing volume</label>
+                  <select
+                    id="create-disk-existing"
+                    value={disk.existingVolume ?? ""}
+                    onChange={(event) =>
+                      setDisk((prev) => ({ ...prev, existingVolume: event.target.value || undefined }))
+                    }
+                    disabled={disableForm || diskVolumeOptions.length === 0}
+                  >
+                    {diskVolumeOptions.length === 0 && <option value="">Select pool</option>}
+                    {diskVolumeOptions.map((volume) => (
+                      <option key={volume} value={volume}>
+                        {volume}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="create-guest-simple__grid">
                 <div className="modal__field">
                   <label htmlFor="create-disk-size">Size (MiB)</label>
@@ -496,7 +598,7 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
                     onChange={(event) =>
                       setDisk((prev) => ({ ...prev, sizeMb: Number(event.target.value) || prev.sizeMb }))
                     }
-                    disabled={disableForm}
+                    disabled={disableForm || disk.mode === "existing"}
                   />
                 </div>
                 <div className="modal__field">
@@ -505,7 +607,7 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
                     id="create-disk-format"
                     value={disk.format}
                     onChange={(event) => setDisk((prev) => ({ ...prev, format: event.target.value as VolumeState["format"] }))}
-                    disabled={disableForm}
+                    disabled={disableForm || disk.mode === "existing"}
                   >
                     <option value="qcow2">qcow2</option>
                     <option value="raw">raw</option>

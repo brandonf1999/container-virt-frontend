@@ -228,6 +228,7 @@ export type VirtualMachine = {
     cpu_time_seconds?: number | null;
     uptime_seconds?: number | null;
   } | null;
+  guest_agent_ips?: string[] | null;
   fetchedAt?: number;
   displayUptimeSeconds?: number | null;
 };

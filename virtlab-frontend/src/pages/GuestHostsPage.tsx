@@ -73,6 +73,19 @@ function computeDisplayUptime(vm: VirtualMachine, now: number) {
   return base;
 }
 
+function filterGuestIps(values?: string[] | null): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((ip) => (typeof ip === "string" ? ip.trim() : ""))
+    .filter((ip) => {
+      if (!ip) return false;
+      if (ip.startsWith("127.")) return false;
+      if (ip === "::1") return false;
+      if (ip.toLowerCase().startsWith("::ffff:127.")) return false;
+      return true;
+    });
+}
+
 function renderUptime(vm: VirtualMachine, now: number) {
   const value = computeDisplayUptime(vm, now);
   return formatDuration(value);
@@ -186,6 +199,24 @@ export function GuestHostsPage() {
         sortable: true,
         sortAccessor: ({ host }) => host,
         renderCell: ({ host }) => host,
+      },
+      {
+        id: "ip",
+        label: "IP Address",
+        sortable: true,
+        sortAccessor: ({ vm }) => {
+          const ips = filterGuestIps(vm.guest_agent_ips);
+          if (!ips.length) return "";
+          const ipv4 = ips.find((ip) => ip.includes("."));
+          return ipv4 ?? ips[0];
+        },
+        renderCell: ({ vm }) => {
+          const ips = filterGuestIps(vm.guest_agent_ips);
+          if (ips.length === 0) return "--";
+          if (ips.length === 1) return ips[0];
+          const [primary, ...rest] = ips;
+          return `${primary} (+${rest.length} more)`;
+        },
       },
       {
         id: "vcpus",
