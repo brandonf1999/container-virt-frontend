@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchHostDetails } from "../api";
-import type { HostDetailsEnvelope } from "../types";
+import { fetchStorageDomain } from "../api";
+import type { StorageDomainAggregate } from "../types";
 
-type HostDetailsOptions = {
+type Options = {
   pollIntervalMs?: number;
 };
 
@@ -11,8 +11,25 @@ type LoadOptions = {
   force?: boolean;
 };
 
-export function useHostDetails(hostname: string | undefined, options: HostDetailsOptions = {}) {
-  const [data, setData] = useState<HostDetailsEnvelope | null>(null);
+const defaultSummary: StorageDomainAggregate["summary"] = {
+  host_count: 0,
+  status_counts: {},
+  last_checked_at: null,
+};
+
+function normalizeDomain(domain: StorageDomainAggregate | null | undefined): StorageDomainAggregate | null {
+  if (!domain) return null;
+  return {
+    ...domain,
+    hosts: domain.hosts ?? [],
+    options: domain.options ?? {},
+    status: domain.status ?? "unknown",
+    summary: domain.summary ?? { ...defaultSummary },
+  };
+}
+
+export function useStorageDomainDetails(storageId: string | undefined, options: Options = {}) {
+  const [domain, setDomain] = useState<StorageDomainAggregate | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
@@ -29,9 +46,16 @@ export function useHostDetails(hostname: string | undefined, options: HostDetail
     };
   }, []);
 
-  const loadDetails = useCallback(
+  const loadDomain = useCallback(
     async ({ silent, force }: LoadOptions = {}) => {
-      if (!hostname) return;
+      if (!storageId) {
+        if (mountedRef.current) {
+          setDomain(null);
+          setError("Storage domain ID missing");
+        }
+        return;
+      }
+
       if (inFlightRef.current && !force) return;
 
       inFlightRef.current = true;
@@ -44,9 +68,10 @@ export function useHostDetails(hostname: string | undefined, options: HostDetail
       }
 
       try {
-        const res = await fetchHostDetails(hostname);
+        const data = await fetchStorageDomain(storageId);
         if (!mountedRef.current) return;
-        setData(res);
+        const normalized = normalizeDomain(data);
+        setDomain(normalized);
         setError(null);
         setLastUpdated(Date.now());
         hasLoadedRef.current = true;
@@ -54,7 +79,7 @@ export function useHostDetails(hostname: string | undefined, options: HostDetail
         if ((err as Error).name === "AbortError") return;
         if (!mountedRef.current) return;
         if (!hasLoadedRef.current) {
-          setData(null);
+          setDomain(null);
         }
         setError((err as Error).message);
       } finally {
@@ -64,26 +89,26 @@ export function useHostDetails(hostname: string | undefined, options: HostDetail
         }
       }
     },
-    [hostname],
+    [storageId],
   );
 
   useEffect(() => {
-    void loadDetails();
+    void loadDomain();
     return () => {
       /* noop */
     };
-  }, [loadDetails]);
+  }, [loadDomain]);
 
   const refresh = useCallback(() => {
-    void loadDetails({ force: true });
-  }, [loadDetails]);
+    void loadDomain({ force: true });
+  }, [loadDomain]);
 
   useEffect(() => {
     if (pollIntervalMs <= 0) return;
     let intervalId: number | null = null;
 
     const tick = () => {
-      void loadDetails({ silent: true });
+      void loadDomain({ silent: true });
     };
 
     const start = () => {
@@ -124,11 +149,10 @@ export function useHostDetails(hostname: string | undefined, options: HostDetail
         document.removeEventListener("visibilitychange", handleVisibility);
       }
     };
-  }, [loadDetails, pollIntervalMs]);
+  }, [loadDomain, pollIntervalMs]);
 
   return {
-    host: data?.host,
-    details: data?.details,
+    domain,
     isLoading,
     error,
     refresh,
@@ -136,3 +160,4 @@ export function useHostDetails(hostname: string | undefined, options: HostDetail
     hasLoaded: hasLoadedRef.current,
   } as const;
 }
+

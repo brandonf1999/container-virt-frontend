@@ -10,15 +10,29 @@ export async function fetchClusterInfo(signal?: AbortSignal) {
 }
 
 export async function fetchClusterNetworks(signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE_URL}/api/cluster/networks`, { signal });
+  const options = signal ? { signal } : undefined;
+  const res = await fetch(`${API_BASE_URL}/api/cluster/networks`, options);
   if (!res.ok) throw new Error(`Cluster networks HTTP ${res.status}`);
   return (await res.json()) as import("./types").ClusterNetworkResponse;
 }
 
+export async function fetchNetworkDetails(networkId: string, signal?: AbortSignal) {
+  const res = await fetch(`${API_BASE_URL}/api/network/${encodeURIComponent(networkId)}`, { signal });
+  if (!res.ok) throw new Error(`Network detail HTTP ${res.status}`);
+  return (await res.json()) as import("./types").NetworkDetailResponse;
+}
+
 export async function fetchClusterStorage(signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE_URL}/api/cluster/storage`, { signal });
+  const options = signal ? { signal } : undefined;
+  const res = await fetch(`${API_BASE_URL}/api/cluster/storage`, options);
   if (!res.ok) throw new Error(`Cluster storage HTTP ${res.status}`);
   return (await res.json()) as import("./types").ClusterStorageResponse;
+}
+
+export async function fetchStorageDomain(storageId: string, signal?: AbortSignal) {
+  const res = await fetch(`${API_BASE_URL}/api/storage/${encodeURIComponent(storageId)}`, { signal });
+  if (!res.ok) throw new Error(`Storage domain HTTP ${res.status}`);
+  return (await res.json()) as import("./types").StorageDomainDetailResponse;
 }
 
 export async function deleteStorageVolume(hostname: string, pool: string, volume: string, options?: { force?: boolean }) {
@@ -248,7 +262,8 @@ export async function fetchGuestConsoleFile(hostname: string, name: string): Pro
 }
 
 export async function fetchHostDetails(hostname: string, signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE_URL}/api/hosts/${encodeURIComponent(hostname)}/info`, { signal });
+  const options = signal ? { signal } : undefined;
+  const res = await fetch(`${API_BASE_URL}/api/hosts/${encodeURIComponent(hostname)}/info`, options);
   if (!res.ok) throw new Error(`Host details HTTP ${res.status}`);
   return (await res.json()) as import("./types").HostDetailsEnvelope;
 }

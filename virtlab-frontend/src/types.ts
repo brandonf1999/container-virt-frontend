@@ -101,8 +101,40 @@ export type HostNetworkInventory = {
   errors?: string[];
 };
 
+export type NetworkHostStatus = {
+  hostname: string;
+  display_name?: string | null;
+  status?: string | null;
+  bridge_active?: boolean | null;
+  last_checked_at?: string | null;
+  mac_prefix?: string | null;
+  message?: string | null;
+  attributes: Record<string, unknown>;
+};
+
+export type NetworkAggregate = {
+  id: string;
+  name: string;
+  forward_mode?: string | null;
+  bridge_name?: string | null;
+  vlan_id?: number | null;
+  is_shared: boolean;
+  description?: string | null;
+  options: Record<string, unknown>;
+  hosts: NetworkHostStatus[];
+  summary?: {
+    host_count: number;
+    status_counts: Record<string, number>;
+    state: string;
+    attention_hosts: NetworkHostStatus[];
+  };
+};
+
+export type NetworkDetailResponse = NetworkAggregate;
+
 export type ClusterNetworkResponse = {
   hosts: Record<string, HostNetworkInventory>;
+  networks?: NetworkAggregate[];
   errors?: Record<string, string>;
   summary?: {
     host_count: number;
@@ -206,8 +238,44 @@ export type HostStorageInventory = {
   errors?: string[];
 };
 
+export type StorageDomainHostStatus = {
+  hostname: string;
+  display_name: string;
+  scope: string;
+  status: string;
+  capacity_bytes?: number | null;
+  allocation_bytes?: number | null;
+  available_bytes?: number | null;
+  last_checked_at?: string | null;
+  message?: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+export type StorageDomainSummary = {
+  host_count: number;
+  status_counts: Record<string, number>;
+  last_checked_at?: string | null;
+};
+
+export type StorageDomainAggregate = {
+  id: string;
+  name: string;
+  type?: string | null;
+  is_shared: boolean;
+  description?: string | null;
+  source_host?: string | null;
+  source_path?: string | null;
+  options: Record<string, unknown>;
+  hosts: StorageDomainHostStatus[];
+  status: string;
+  summary: StorageDomainSummary;
+};
+
+export type StorageDomainDetailResponse = StorageDomainAggregate;
+
 export type ClusterStorageResponse = {
   hosts: Record<string, HostStorageInventory>;
+  storage_domains?: StorageDomainAggregate[];
   errors?: Record<string, string>;
   summary?: {
     host_count: number;

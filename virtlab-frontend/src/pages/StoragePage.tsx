@@ -1,21 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useClusterStorage } from "../hooks/useClusterStorage";
-import type { StoragePool, StorageVolume } from "../types";
+import type { StorageDomainAggregate, StorageVolume } from "../types";
 import { formatBytes } from "../utils/formatters";
-import { deleteStoragePool, deleteStorageVolume } from "../api";
-import { API_BASE_URL } from "../api";
+import { deleteStorageVolume } from "../api";
 import { getVolumeStateMeta } from "../utils/storage";
 import { ColumnSelector, useTableState } from "../utils/table";
 import type { TableColumn } from "../utils/table";
 import { useActivityLog } from "../hooks/useActivityLog";
 import { DeleteConfirmationModal } from "../components/DeleteConfirmationModal";
-
-type StorageRow = {
-  host: string;
-  pool: StoragePool;
-};
 
 type StorageVolumeRow = {
   host: string;
@@ -24,17 +17,9 @@ type StorageVolumeRow = {
 
 type StorageTableView = "domains" | "volumes";
 
-type DeleteTarget =
-  | { type: "pool"; host: string; pool: StoragePool }
-  | { type: "volume"; host: string; volume: StorageVolume };
+type DeleteTarget = { type: "volume"; host: string; volume: StorageVolume };
 
-type UploadTarget = { host: string; pool: StoragePool };
-
-type PendingAction = { type: "pool" | "volume" | "upload"; key: string };
-
-function makePoolKey(host: string, poolName: string) {
-  return `${host}:${poolName}`;
-}
+type PendingAction = { type: "volume"; key: string };
 
 function makeVolumeKey(host: string, poolName: string, volumeName: string) {
   return `${host}:${poolName}:${volumeName}`;
@@ -45,7 +30,6 @@ const TABLE_OPTIONS: Array<{ id: StorageTableView; label: string }> = [
   { id: "volumes", label: "Storage Volumes" },
 ];
 
-const EMPTY_DOMAINS_STATE = "No storage pools reported yet.";
 const EMPTY_VOLUMES_STATE = "No storage volumes reported yet.";
 
 function formatBoolean(value: boolean | null | undefined) {
@@ -59,109 +43,44 @@ function formatLabel(value: string | null | undefined) {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
+function getStatusIntent(value: string | null | undefined) {
+  const normalized = (value ?? "").toLowerCase();
+  switch (normalized) {
+    case "available":
+      return "ok";
+    case "degraded":
+      return "warning";
+    case "missing":
+      return "error";
+    default:
+      return "muted";
+  }
+}
+
 export function StoragePage() {
-  const { hosts, errors, isLoading, error, refresh } = useClusterStorage();
+  const { hosts, storageDomains, errors, isLoading, error, refresh } = useClusterStorage();
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialView = (searchParams.get("view") as StorageTableView | null) ?? "domains";
+  const initialViewParam = searchParams.get("view");
+  const initialView = TABLE_OPTIONS.some((option) => option.id === initialViewParam)
+    ? (initialViewParam as StorageTableView)
+    : "domains";
   const [tableView, setTableView] = useState<StorageTableView>(initialView);
   const [confirmTarget, setConfirmTarget] = useState<DeleteTarget | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [uploadTarget, setUploadTarget] = useState<UploadTarget | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
   const { addEntry, updateEntry, openPanel } = useActivityLog();
-
-  const poolRows = useMemo(() => {
-    const items: StorageRow[] = [];
-    Object.entries(hosts).forEach(([hostname, inventory]) => {
-      inventory.pools.forEach((pool) => {
-        items.push({ host: hostname, pool });
-      });
-    });
-    return items.sort((a, b) => {
-      if (a.host === b.host) {
-        return a.pool.name.localeCompare(b.pool.name);
-      }
-      return a.host.localeCompare(b.host);
-    });
-  }, [hosts]);
-
-  const poolColumns = useMemo<TableColumn<StorageRow>[]>(
-    () => [
-      {
-        id: "host",
-        label: "Host",
-        sortable: true,
-        sortAccessor: ({ host }) => host,
-        renderCell: ({ host }) => host,
-      },
-      {
-        id: "pool",
-        label: "Pool",
-        sortable: true,
-        sortAccessor: ({ pool }) => pool.name ?? "",
-        renderCell: ({ pool }) => (
-          <div className="hosts-table__primary">{pool.name}</div>
-        ),
-      },
-      {
-        id: "type",
-        label: "Type",
-        sortable: true,
-        sortAccessor: ({ pool }) => pool.type ?? "",
-        renderCell: ({ pool }) => formatLabel(pool.type ?? null),
-      },
-      {
-        id: "state",
-        label: "State",
-        sortable: true,
-        sortAccessor: ({ pool }) => pool.state ?? "",
-        renderCell: ({ pool }) => formatLabel(pool.state),
-      },
-      {
-        id: "persistent",
-        label: "Persistent",
-        sortable: true,
-        sortAccessor: ({ pool }) => (pool.persistent === null ? null : pool.persistent ? 1 : 0),
-        renderCell: ({ pool }) => formatBoolean(pool.persistent),
-      },
-      {
-        id: "autostart",
-        label: "Autostart",
-        sortable: true,
-        sortAccessor: ({ pool }) => (pool.autostart === null ? null : pool.autostart ? 1 : 0),
-        renderCell: ({ pool }) => formatBoolean(pool.autostart),
-      },
-      {
-        id: "capacity",
-        label: "Capacity",
-        sortable: true,
-        sortAccessor: ({ pool }) => pool.capacity_bytes ?? null,
-        renderCell: ({ pool }) => formatBytes(pool.capacity_bytes),
-      },
-      {
-        id: "allocation",
-        label: "Allocation",
-        sortable: true,
-        sortAccessor: ({ pool }) => pool.allocation_bytes ?? null,
-        renderCell: ({ pool }) => formatBytes(pool.allocation_bytes),
-      },
-      {
-        id: "available",
-        label: "Available",
-        sortable: true,
-        sortAccessor: ({ pool }) => pool.available_bytes ?? null,
-        renderCell: ({ pool }) => formatBytes(pool.available_bytes),
-      },
-    ],
-    [],
-  );
 
   const volumeRows = useMemo(() => {
     const items: StorageVolumeRow[] = [];
+    const seen = new Set<string>();
     Object.entries(hosts).forEach(([hostname, inventory]) => {
       inventory.volumes.forEach((volume) => {
+        const dedupeKey = `${volume.pool ?? ""}::${volume.name ?? ""}`;
+        if (seen.has(dedupeKey)) {
+          return;
+        }
+        seen.add(dedupeKey);
         items.push({ host: hostname, volume });
       });
     });
@@ -209,13 +128,6 @@ export function StoragePage() {
         sortable: true,
         sortAccessor: ({ volume }) => volume.pool ?? "",
         renderCell: ({ volume }) => volume.pool,
-      },
-      {
-        id: "host",
-        label: "Host",
-        sortable: true,
-        sortAccessor: ({ host }) => host,
-        renderCell: ({ host }) => host,
       },
       {
         id: "type",
@@ -272,14 +184,111 @@ export function StoragePage() {
   }, [errors]);
 
   const stats = useMemo(() => {
-    const hostCount = Object.keys(hosts).length;
-    const poolCount = poolRows.length;
-    const runningPools = poolRows.filter((row) => row.pool.state === "running").length;
+    const inventories = Object.values(hosts);
+    const hostCount = inventories.length;
+    let poolCount = 0;
+    let runningPools = 0;
+    inventories.forEach((inventory) => {
+      const pools = inventory.pools ?? [];
+      poolCount += pools.length;
+      runningPools += pools.filter((pool) => pool.state === "running").length;
+    });
     const volumeCount = volumeRows.length;
     return { hostCount, poolCount, runningPools, volumeCount };
-  }, [hosts, poolRows, volumeRows]);
+  }, [hosts, volumeRows]);
 
-  const hasPoolRows = poolRows.length > 0;
+  const aggregatedStats = useMemo(() => {
+    const total = storageDomains.length;
+    const shared = storageDomains.filter((domain) => domain.is_shared).length;
+    return { total, shared };
+  }, [storageDomains]);
+
+  const aggregatedColumns = useMemo<TableColumn<StorageDomainAggregate>[]>(
+    () => [
+      {
+        id: "name",
+        label: "Domain",
+        sortable: true,
+        sortAccessor: (domain) => domain.name,
+        renderCell: (domain) => (
+          <div className="hosts-table__primary">
+            <Link to={`/storage/pools/${domain.id}`}>{domain.name}</Link>
+          </div>
+        ),
+      },
+      {
+        id: "type",
+        label: "Type",
+        sortable: true,
+        sortAccessor: (domain) => domain.type ?? "",
+        renderCell: (domain) => formatLabel(domain.type),
+      },
+      {
+        id: "shared",
+        label: "Shared",
+        sortable: true,
+        sortAccessor: (domain) => (domain.is_shared ? 1 : 0),
+        renderCell: (domain) => formatBoolean(domain.is_shared),
+      },
+      {
+        id: "host_count",
+        label: "Hosts",
+        sortable: true,
+        sortAccessor: (domain) => domain.summary.host_count,
+        renderCell: (domain) => domain.summary.host_count,
+      },
+      {
+        id: "status",
+        label: "Status",
+        sortable: true,
+        sortAccessor: (domain) => (domain.status ?? "").toLowerCase(),
+        renderCell: (domain) => (
+          <div className="status-pills">
+            <span className={`status-pill status-pill--${getStatusIntent(domain.status)}`}>
+              {formatLabel(domain.status)}
+              {domain.summary.status_counts[domain.status]
+                ? ` (${domain.summary.status_counts[domain.status]})`
+                : ""}
+            </span>
+            {Object.entries(domain.summary.status_counts)
+              .filter(([status]) => status !== domain.status)
+              .map(([status, count]) => (
+                <span key={status} className={`status-pill status-pill--${getStatusIntent(status)}`}>
+                  {formatLabel(status)} ({count})
+                </span>
+              ))}
+          </div>
+        ),
+      },
+      {
+        id: "last_checked",
+        label: "Last Checked",
+        sortable: true,
+        sortAccessor: (domain) => domain.summary.last_checked_at ?? "",
+        renderCell: (domain) =>
+          domain.summary.last_checked_at ? new Date(domain.summary.last_checked_at).toLocaleString() : "--",
+      },
+    ],
+    [],
+  );
+
+  const aggregatedTable = useTableState(aggregatedColumns, storageDomains, {
+    storageKey: "storage-aggregated-columns",
+    defaultVisible: ["name", "type", "shared", "host_count", "status"],
+    initialSort: { columnId: "name", direction: "asc" },
+  });
+
+  const {
+    visibleColumns: aggregatedVisibleColumns,
+    visibleColumnIds: aggregatedVisibleIds,
+    toggleColumn: toggleAggregatedColumn,
+    canToggleColumn: canToggleAggregatedColumn,
+    sortedRows: aggregatedSortedRows,
+    requestSort: requestAggregatedSort,
+    sortState: aggregatedSortState,
+  } = aggregatedTable;
+
+  const hasAggregatedRows = storageDomains.length > 0;
   const hasVolumeRows = volumeRows.length > 0;
 
   const requestDeleteVolume = useCallback((host: string, volume: StorageVolume) => {
@@ -288,35 +297,13 @@ export function StoragePage() {
     setConfirmTarget({ type: "volume", host, volume });
   }, []);
 
-  const requestDeletePool = useCallback((host: string, pool: StoragePool) => {
-    setActionMessage(null);
-    setActionError(null);
-    setConfirmTarget({ type: "pool", host, pool });
-  }, []);
-
-  const requestUploadPool = useCallback((host: string, pool: StoragePool) => {
-    setActionMessage(null);
-    setActionError(null);
-    setUploadTarget({ host, pool });
-  }, []);
-
   const performDelete = useCallback(
     async (target: DeleteTarget) => {
-      const key =
-        target.type === "pool"
-          ? makePoolKey(target.host, target.pool.name ?? "")
-          : makeVolumeKey(target.host, target.volume.pool ?? "", target.volume.name ?? "");
-
-      const poolName = target.type === "pool" ? target.pool.name ?? "" : target.volume.pool ?? "";
-      const volumeName = target.type === "volume" ? target.volume.name ?? "" : "";
-      const entryTitle =
-        target.type === "pool"
-          ? `Delete storage pool ${poolName}`
-          : `Delete storage volume ${volumeName}`;
-      const entryDetail =
-        target.type === "pool"
-          ? `Host ${target.host}`
-          : `Pool ${poolName} · Host ${target.host}`;
+      const key = makeVolumeKey(target.host, target.volume.pool ?? "", target.volume.name ?? "");
+      const poolName = target.volume.pool ?? "";
+      const volumeName = target.volume.name ?? "";
+      const entryTitle = `Delete storage volume ${volumeName}`;
+      const entryDetail = `Pool ${poolName} · Host ${target.host}`;
 
       const entryId = addEntry({
         title: entryTitle,
@@ -327,25 +314,16 @@ export function StoragePage() {
 
       setActionMessage(null);
       setActionError(null);
-      setPendingAction({ type: target.type, key });
+      setPendingAction({ type: "volume", key });
 
       try {
-        if (target.type === "pool") {
-          const response = await deleteStoragePool(target.host, poolName);
-          const messageHost = response?.host ?? target.host;
-          const messagePool = response?.pool ?? poolName;
-          const successDetail = `Deleted ${messagePool} on ${messageHost}.`;
-          setActionMessage(successDetail);
-          updateEntry(entryId, { status: "success", detail: successDetail });
-        } else {
-          const response = await deleteStorageVolume(target.host, poolName, volumeName);
-          const messageHost = response?.host ?? target.host;
-          const messagePool = response?.pool ?? poolName;
-          const messageVolume = response?.volume ?? volumeName;
-          const successDetail = `Deleted ${messageVolume} from ${messagePool} on ${messageHost}.`;
-          setActionMessage(successDetail);
-          updateEntry(entryId, { status: "success", detail: successDetail });
-        }
+        const response = await deleteStorageVolume(target.host, poolName, volumeName);
+        const messageHost = response?.host ?? target.host;
+        const messagePool = response?.pool ?? poolName;
+        const messageVolume = response?.volume ?? volumeName;
+        const successDetail = `Deleted ${messageVolume} from ${messagePool} on ${messageHost}.`;
+        setActionMessage(successDetail);
+        updateEntry(entryId, { status: "success", detail: successDetail });
         refresh();
       } catch (err) {
         const failure = err instanceof Error ? err.message : String(err);
@@ -365,107 +343,6 @@ export function StoragePage() {
     void performDelete(confirmTarget);
   }, [confirmTarget, performDelete]);
 
-  const handleUploadSubmit = useCallback(
-    async ({
-      file,
-      volumeName,
-      overwrite,
-      format,
-      onProgress,
-    }: {
-      file: File;
-      volumeName: string;
-      overwrite: boolean;
-      format: string | null;
-      onProgress: (loaded: number, total: number) => void;
-    }) => {
-      if (!uploadTarget) return;
-      const poolName = uploadTarget.pool.name ?? "";
-      const key = makePoolKey(uploadTarget.host, poolName);
-
-      const entryId = addEntry({
-        title: `Upload storage volume ${volumeName}`,
-        detail: `Pool ${poolName} · Host ${uploadTarget.host}`,
-        scope: "storage",
-        status: "pending",
-      });
-
-      setPendingAction({ type: "upload", key });
-      setIsUploading(true);
-      setActionMessage(null);
-      setActionError(null);
-
-      try {
-        const response = await new Promise<import("../types").StorageVolumeDetailsResponse>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open(
-            "POST",
-            `${API_BASE_URL}/api/hosts/${encodeURIComponent(uploadTarget.host)}/storage/pools/${encodeURIComponent(poolName)}/upload`,
-            true,
-          );
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              onProgress(event.loaded, event.total);
-            }
-          };
-          xhr.onerror = () => reject(new Error("Upload failed"));
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                resolve(JSON.parse(xhr.responseText));
-              } catch {
-                reject(new Error("Failed to parse upload response"));
-              }
-            } else {
-              try {
-                const payload = JSON.parse(xhr.responseText || "{}");
-                const detail = payload?.detail;
-                if (typeof detail === "string") {
-                  reject(new Error(detail));
-                  return;
-                }
-                if (detail && typeof detail === "object" && typeof detail.message === "string") {
-                  reject(new Error(detail.message));
-                  return;
-                }
-              } catch {
-                /* noop */
-              }
-              reject(new Error(`Upload storage volume HTTP ${xhr.status}`));
-            }
-          };
-
-          const formData = new FormData();
-          formData.set("file", file);
-          formData.set("volume", volumeName);
-          formData.set("overwrite", overwrite ? "true" : "false");
-          if (format) {
-            formData.set("volume_format", format);
-          }
-
-          xhr.send(formData);
-        });
-        const messageVolume = response.volume.name ?? volumeName;
-        const messagePool = response.pool.name ?? poolName;
-        const messageHost = response.host ?? uploadTarget.host;
-        const successDetail = `Uploaded ${messageVolume} to ${messagePool} on ${messageHost}.`;
-        setActionMessage(successDetail);
-        updateEntry(entryId, { status: "success", detail: successDetail });
-        setUploadTarget(null);
-        refresh();
-      } catch (err) {
-        const failure = err instanceof Error ? err.message : String(err);
-        setActionError(failure);
-        updateEntry(entryId, { status: "error", detail: failure });
-        openPanel();
-      } finally {
-        setPendingAction(null);
-        setIsUploading(false);
-      }
-    },
-    [addEntry, openPanel, refresh, updateEntry, uploadTarget],
-  );
-
   const volumeTable = useTableState(volumeColumns, volumeRows, {
     defaultVisible: ["state", "name", "pool", "type", "capacity", "allocation"],
     storageKey: "storage-volume-columns",
@@ -482,33 +359,15 @@ export function StoragePage() {
     requestSort: requestVolumeSort,
   } = volumeTable;
 
-  const poolTable = useTableState(poolColumns, poolRows, {
-    defaultVisible: ["pool", "type", "state", "autostart", "capacity", "allocation"],
-    storageKey: "storage-pool-columns",
-    initialSort: { columnId: "pool", direction: "asc" },
-  });
-
-  const {
-    visibleColumns: poolVisibleColumns,
-    visibleColumnIds: poolVisibleIds,
-    toggleColumn: togglePoolColumn,
-    canToggleColumn: canTogglePoolColumn,
-    sortedRows: poolSortedRows,
-    sortState: poolSortState,
-    requestSort: requestPoolSort,
-  } = poolTable;
-
   const modalProcessing =
     !!confirmTarget &&
-    pendingAction?.type === confirmTarget.type &&
+    pendingAction?.type === "volume" &&
     pendingAction.key ===
-      (confirmTarget.type === "pool"
-        ? makePoolKey(confirmTarget.host, confirmTarget.pool.name ?? "")
-        : makeVolumeKey(
-            confirmTarget.host,
-            confirmTarget.volume.pool ?? "",
-            confirmTarget.volume.name ?? "",
-          ));
+      makeVolumeKey(
+        confirmTarget.host,
+        confirmTarget.volume.pool ?? "",
+        confirmTarget.volume.name ?? "",
+      );
 
   return (
     <div className="page-stack" data-page="storage">
@@ -528,9 +387,11 @@ export function StoragePage() {
         <header className="panel__header">
           <h2 className="panel__title">Storage Pools</h2>
           <p className="panel__subtitle">
-            {stats.poolCount} pool{stats.poolCount === 1 ? "" : "s"} across {stats.hostCount} host
-            {stats.hostCount === 1 ? "" : "s"}; {stats.runningPools} running. {stats.volumeCount} volume
-            {stats.volumeCount === 1 ? "" : "s"} detected.
+            {aggregatedStats.total} storage domain{aggregatedStats.total === 1 ? "" : "s"}
+            ({aggregatedStats.shared} shared) aggregated across {stats.hostCount} host
+            {stats.hostCount === 1 ? "" : "s"}. {stats.poolCount} pool{stats.poolCount === 1 ? "" : "s"}
+            detected with {stats.runningPools} running and {stats.volumeCount} volume
+            {stats.volumeCount === 1 ? "" : "s"} captured.
           </p>
         </header>
 
@@ -561,96 +422,65 @@ export function StoragePage() {
           </div>
         )}
 
-        {!isLoading && !error && tableView === "domains" && !hasPoolRows && (
-          <div className="panel__status">{EMPTY_DOMAINS_STATE}</div>
+        {!isLoading && !error && tableView === "domains" && !hasAggregatedRows && (
+          <div className="panel__status">No storage domains recorded yet.</div>
         )}
 
-        {!isLoading && !error && tableView === "domains" && hasPoolRows && (
-          <>
-            <div className="table-wrapper">
-              <table className="hosts-table hosts-table--metrics">
-                <thead>
-                  <tr>
-                    {poolVisibleColumns.map((column) => {
-                      const isSorted = poolSortState?.columnId === column.id;
-                      const ariaSort = isSorted
-                        ? poolSortState?.direction === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none";
-                      return (
-                        <th key={column.id} scope="col" aria-sort={ariaSort}>
-                          {column.sortable ? (
-                            <button
-                              type="button"
-                              className={`table-header-button table-header-button--sortable${
-                                isSorted ? " table-header-button--active" : ""
-                              }`}
-                              onClick={() => requestPoolSort(column.id)}
-                            >
-                              {column.label}
-                              <span className="table-header-button__icon">
-                                {isSorted ? (poolSortState?.direction === "asc" ? "▲" : "▼") : "↕"}
-                              </span>
-                            </button>
-                          ) : (
-                            column.label
-                          )}
-                        </th>
-                      );
-                    })}
-                    <th scope="col" className="table-gear-header" aria-label="Column settings">
-                      <ColumnSelector
-                        columns={poolColumns}
-                        visibleColumnIds={poolVisibleIds}
-                        toggleColumn={togglePoolColumn}
-                        canToggleColumn={canTogglePoolColumn}
-                      />
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {poolSortedRows.map((row) => {
-                    const key = makePoolKey(row.host, row.pool.name ?? "");
-                    const isDeleting = pendingAction?.type === "pool" && pendingAction.key === key;
-                    const isUploadPending = pendingAction?.type === "upload" && pendingAction.key === key;
+        {!isLoading && !error && tableView === "domains" && hasAggregatedRows && (
+          <div className="table-wrapper">
+            <table className="hosts-table hosts-table--metrics">
+              <thead>
+                <tr>
+                  {aggregatedVisibleColumns.map((column) => {
+                    const isSorted = aggregatedSortState?.columnId === column.id;
+                    const ariaSort = isSorted
+                      ? aggregatedSortState?.direction === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none";
                     return (
-                      <tr key={key}>
-                        {poolVisibleColumns.map((column) => (
-                          <td key={column.id}>{column.renderCell(row)}</td>
-                        ))}
-                        <td className="table-gear-cell">
-                          <div className="table-gear-cell__actions">
-                            <button
-                              type="button"
-                              className="hosts-table__action-button"
-                              onClick={() => requestUploadPool(row.host, row.pool)}
-                              disabled={
-                                isUploadPending ||
-                                isDeleting ||
-                                isLoading ||
-                                isUploading
-                              }
-                            >
-                              {isUploadPending ? "Uploading…" : "Upload"}
-                            </button>
-                            <button
-                              type="button"
-                              className="hosts-table__action-button hosts-table__action-button--danger"
-                              onClick={() => requestDeletePool(row.host, row.pool)}
-                              disabled={isDeleting || isLoading || isUploadPending}
-                            >
-                              {isDeleting ? "Deleting…" : "Delete"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                      <th key={column.id} scope="col" aria-sort={ariaSort}>
+                        {column.sortable ? (
+                          <button
+                            type="button"
+                            className={`table-header-button table-header-button--sortable${
+                              isSorted ? " table-header-button--active" : ""
+                            }`}
+                            onClick={() => requestAggregatedSort(column.id)}
+                          >
+                            {column.label}
+                            <span className="table-header-button__icon">
+                              {isSorted ? (aggregatedSortState?.direction === "asc" ? "▲" : "▼") : "↕"}
+                            </span>
+                          </button>
+                        ) : (
+                          column.label
+                        )}
+                      </th>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
-          </>
+                  <th scope="col" className="table-gear-header" aria-label="Column settings">
+                    <ColumnSelector
+                      columns={aggregatedColumns}
+                      visibleColumnIds={aggregatedVisibleIds}
+                      toggleColumn={toggleAggregatedColumn}
+                      canToggleColumn={canToggleAggregatedColumn}
+                    />
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {aggregatedSortedRows.map((domain) => (
+                  <tr key={domain.id}>
+                    {aggregatedVisibleColumns.map((column) => (
+                      <td key={column.id}>{column.renderCell(domain)}</td>
+                    ))}
+                    <td className="table-gear-cell" />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {!isLoading && !error && tableView === "volumes" && !hasVolumeRows && (
@@ -744,40 +574,23 @@ export function StoragePage() {
           </div>
         )}
 
-      {!isLoading && !error && inventoryErrors.length > 0 && (
-        <div className="panel__status panel__status--error">
-          {inventoryErrors.map(({ host, message }) => (
-            <div key={`${host}:${message}`}>{`${host}: ${message}`}</div>
-          ))}
-        </div>
-      )}
+        {!isLoading && !error && inventoryErrors.length > 0 && (
+          <div className="panel__status panel__status--error">
+            {inventoryErrors.map(({ host, message }) => (
+              <div key={`${host}:${message}`}>{`${host}: ${message}`}</div>
+            ))}
+          </div>
+        )}
 
       </section>
 
-      {uploadTarget && (
-        <UploadVolumeModal
-          target={uploadTarget}
-          onCancel={() => {
-            if (isUploading) return;
-            setUploadTarget(null);
-          }}
-          onSubmit={handleUploadSubmit}
-          isProcessing={isUploading}
-        />
-      )}
-
       {confirmTarget && (() => {
         const requiredName =
-          confirmTarget.type === "pool"
-            ? confirmTarget.pool.name ?? ""
-            : confirmTarget.volume.name ?? "";
-        const locationText =
-          confirmTarget.type === "pool"
-            ? `storage pool ${confirmTarget.pool.name ?? ""} on ${confirmTarget.host}`
-            : `storage volume ${confirmTarget.volume.name ?? ""} in pool ${confirmTarget.volume.pool ?? ""} on ${confirmTarget.host}`;
+          confirmTarget.volume.name ?? "";
+        const locationText = `storage volume ${confirmTarget.volume.name ?? ""} in pool ${confirmTarget.volume.pool ?? ""} on ${confirmTarget.host}`;
         return (
           <DeleteConfirmationModal
-            title={confirmTarget.type === "pool" ? "Delete storage pool" : "Delete storage volume"}
+            title="Delete storage volume"
             description="This action cannot be undone."
             entityName={requiredName}
             onCancel={() => setConfirmTarget(null)}
@@ -793,224 +606,6 @@ export function StoragePage() {
           </DeleteConfirmationModal>
         );
       })()}
-    </div>
-  );
-}
-
-type UploadVolumeModalProps = {
-  target: UploadTarget;
-  onCancel: () => void;
-  onSubmit: (payload: {
-    file: File;
-    volumeName: string;
-    overwrite: boolean;
-    format: string | null;
-    onProgress: (loaded: number, total: number) => void;
-  }) => void;
-  isProcessing: boolean;
-};
-
-function UploadVolumeModal({ target, onCancel, onSubmit, isProcessing }: UploadVolumeModalProps) {
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [volumeName, setVolumeName] = useState("");
-  const [nameDirty, setNameDirty] = useState(false);
-  const [format, setFormat] = useState("raw");
-  const [formatDirty, setFormatDirty] = useState(false);
-  const [overwrite, setOverwrite] = useState(false);
-  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null);
-
-  const poolName = target.pool.name ?? "";
-  const hostName = target.host;
-
-  useEffect(() => {
-    setFile(null);
-    setVolumeName("");
-    setNameDirty(false);
-    setFormat("raw");
-    setFormatDirty(false);
-    setOverwrite(false);
-    setProgress(null);
-    const timer = window.setTimeout(() => fileInputRef.current?.focus(), 50);
-    return () => window.clearTimeout(timer);
-  }, [target]);
-
-  useEffect(() => {
-    function handleKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        if (!isProcessing) onCancel();
-      }
-    }
-
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [isProcessing, onCancel]);
-
-  const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const nextFile = event.target.files?.[0] ?? null;
-    setFile(nextFile);
-    if (nextFile && !nameDirty) {
-      const base = nextFile.name.replace(/\.[^.]+$/, "");
-      setVolumeName(base || nextFile.name);
-    }
-    if (nextFile && !formatDirty) {
-      const ext = nextFile.name.split(".").pop()?.toLowerCase();
-      if (ext === "qcow2" || ext === "qcow") {
-        setFormat("qcow2");
-      } else if (ext === "vmdk") {
-        setFormat("vmdk");
-      } else {
-        setFormat("raw");
-      }
-    }
-  }, [formatDirty, nameDirty]);
-
-  const handleSubmit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      if (!file) return;
-      const trimmed = volumeName.trim();
-      if (!trimmed) return;
-      onSubmit({
-        file,
-        volumeName: trimmed,
-        overwrite,
-        format,
-        onProgress: (loaded, total) => setProgress({ loaded, total }),
-      });
-    },
-    [file, format, onSubmit, overwrite, volumeName],
-  );
-
-  const canSubmit = Boolean(file && volumeName.trim() && !isProcessing);
-
-  return (
-    <div
-      className="modal-overlay"
-      role="presentation"
-      onClick={() => {
-        if (!isProcessing) onCancel();
-      }}
-    >
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="upload-volume-title"
-        aria-describedby="upload-volume-description"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="modal__header">
-          <div>
-            <h2 id="upload-volume-title">Upload storage volume</h2>
-            <p id="upload-volume-description">
-              Upload a disk image to pool <strong>{poolName}</strong> on <strong>{hostName}</strong>.
-            </p>
-          </div>
-          <button
-            type="button"
-            className="modal__close"
-            onClick={onCancel}
-            disabled={isProcessing}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </header>
-
-        <form className="modal__body" onSubmit={handleSubmit}>
-          <div className="modal__input-group">
-            <label htmlFor="upload-volume-file">Disk image</label>
-            <input
-              ref={fileInputRef}
-              id="upload-volume-file"
-              type="file"
-              accept=".qcow2,.qcow,.img,.raw,.iso,.vmdk,.qcow2.gz,.qcow.gz"
-              onChange={handleFileChange}
-              disabled={isProcessing}
-              required
-            />
-          </div>
-
-          <div className="modal__input-group">
-            <label htmlFor="upload-volume-name">Volume name</label>
-            <input
-              id="upload-volume-name"
-              type="text"
-              value={volumeName}
-              onChange={(event) => {
-                setVolumeName(event.target.value);
-                if (!nameDirty) setNameDirty(true);
-              }}
-              disabled={isProcessing}
-              autoComplete="off"
-              spellCheck={false}
-              required
-            />
-          </div>
-
-          <div className="modal__input-group">
-            <label htmlFor="upload-volume-format">Format</label>
-            <select
-              id="upload-volume-format"
-              value={format}
-              onChange={(event) => {
-                setFormat(event.target.value);
-                if (!formatDirty) setFormatDirty(true);
-              }}
-              disabled={isProcessing}
-            >
-              <option value="raw">raw</option>
-              <option value="qcow2">qcow2</option>
-              <option value="vmdk">vmdk</option>
-            </select>
-          </div>
-
-          <label className="modal__checkbox">
-            <input
-              type="checkbox"
-              checked={overwrite}
-              onChange={(event) => setOverwrite(event.target.checked)}
-              disabled={isProcessing}
-            />
-            Overwrite existing volume if present
-          </label>
-
-          {progress && (
-            <div className="modal__progress" aria-live="polite">
-              <div className="modal__progress-bar">
-                <div
-                  className="modal__progress-bar-fill"
-                  style={{ width: `${Math.min((progress.loaded / progress.total) * 100, 100)}%` }}
-                />
-              </div>
-              <div className="modal__progress-label">
-                {Math.round((progress.loaded / progress.total) * 100)}%
-                {progress.total ? ` · ${formatBytes(progress.loaded)} / ${formatBytes(progress.total)}` : ""}
-              </div>
-            </div>
-          )}
-
-          <div className="modal__actions">
-            <button
-              type="button"
-              className="hosts-table__action-button"
-              onClick={onCancel}
-              disabled={isProcessing}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="hosts-table__action-button"
-              disabled={!canSubmit}
-            >
-              {isProcessing ? "Uploading…" : "Upload"}
-            </button>
-          </div>
-        </form>
-      </div>
     </div>
   );
 }

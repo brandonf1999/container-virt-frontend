@@ -9,10 +9,12 @@ import { useClusterInfo } from "./hooks/useClusterInfo";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { NetworkPage } from "./pages/NetworkPage";
 import { StoragePage } from "./pages/StoragePage";
+import { StorageDomainDetailsPage } from "./pages/StorageDomainDetailsPage";
 import { GuestHostsPage } from "./pages/GuestHostsPage";
 import { VirtualHostDetailsPage } from "./pages/VirtualHostDetailsPage";
 import { PhysicalHostDetailsPage } from "./pages/PhysicalHostDetailsPage";
 import { StorageVolumeDetailsPage } from "./pages/StorageVolumeDetailsPage";
+import { NetworkDetailsPage } from "./pages/NetworkDetailsPage";
 import { ActivityLogPanel } from "./components/ActivityLogPanel";
 import { useActivityLog } from "./hooks/useActivityLog";
 
@@ -128,6 +130,7 @@ function App() {
                 path="/storage"
                 element={<StoragePage />}
               />
+              <Route path="/storage/pools/:storageId" element={<StorageDomainDetailsPage />} />
               <Route
                 path="/storage/hosts/:hostname/pools/:pool/volumes/:volume"
                 element={<StorageVolumeDetailsPage />}
@@ -136,6 +139,7 @@ function App() {
                 path="/networking"
                 element={<NetworkPage />}
               />
+              <Route path="/networking/networks/:networkId" element={<NetworkDetailsPage />} />
               <Route
                 path="/admin"
                 element={<PlaceholderPage title="Admin">Cluster administration tools coming soon.</PlaceholderPage>}

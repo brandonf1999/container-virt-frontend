@@ -565,6 +565,12 @@
   letter-spacing: 0.05em;
 }
 
+.status-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .status-pill--ok {
   background: #dcfce7;
   color: #0f6a36;
@@ -1572,6 +1578,15 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.attention-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.attention-list__name {
+  font-weight: 600;
 }
 
 .vm-actions__group--danger {
