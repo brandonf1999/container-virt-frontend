@@ -268,6 +268,38 @@ export async function fetchHostDetails(hostname: string, signal?: AbortSignal) {
   return (await res.json()) as import("./types").HostDetailsEnvelope;
 }
 
+export async function moveGuestHost(
+  hostname: string,
+  name: string,
+  payload: import("./types").GuestMoveRequest,
+) {
+  const url = `${API_BASE_URL}/api/hosts/${encodeURIComponent(hostname)}/vms/${encodeURIComponent(name)}/move`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let message = `Move guest HTTP ${res.status}`;
+    try {
+      const data = (await res.json()) as { detail?: unknown } | null;
+      const detail = data?.detail ?? data;
+      if (typeof detail === "string") {
+        message = detail;
+      } else if (detail && typeof detail === "object") {
+        const maybeMessage = (detail as { message?: unknown }).message;
+        if (typeof maybeMessage === "string") {
+          message = maybeMessage;
+        }
+      }
+    } catch {
+      /* noop */
+    }
+    throw new Error(message);
+  }
+  return (await res.json()) as import("./types").GuestMoveResponse;
+}
+
 export async function createGuestHost(hostname: string, payload: import("./types").CreateGuestPayload) {
   const res = await fetch(`${API_BASE_URL}/api/hosts/${encodeURIComponent(hostname)}/vms`, {
     method: "POST",

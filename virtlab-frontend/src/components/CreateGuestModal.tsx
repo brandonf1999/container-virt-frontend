@@ -44,6 +44,7 @@ const VCPU_PRESETS = [1, 2, 4, 8];
 const MEMORY_PRESETS_MB = [1024, 2048, 4096, 8192, 16384];
 const VNC_PASSWORD_LENGTH = 8;
 const VNC_PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const DEFAULT_DISK_NAME = "disk0";
 
 function generateVncPassword(length = VNC_PASSWORD_LENGTH) {
   const alphabet = VNC_PASSWORD_ALPHABET;
@@ -68,7 +69,8 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
   const [powerOn, setPowerOn] = useState(true);
   const [vcpus, setVcpus] = useState(2);
   const [memoryMb, setMemoryMb] = useState(2048);
-  const [disk, setDisk] = useState<VolumeState>({ name: "disk0", pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new" });
+  const [disk, setDisk] = useState<VolumeState>({ name: DEFAULT_DISK_NAME, pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new" });
+  const [diskNameTouched, setDiskNameTouched] = useState(false);
   const [iso, setIso] = useState<IsoState>({ enabled: false, pool: "" });
   const [network, setNetwork] = useState<string>("");
   const [macAddress, setMacAddress] = useState("");
@@ -115,6 +117,22 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
   }, [hostName, networkHosts]);
 
   const wasOpenRef = useRef(false);
+  const diskNameTouchedRef = useRef(diskNameTouched);
+
+  useEffect(() => {
+    diskNameTouchedRef.current = diskNameTouched;
+  }, [diskNameTouched]);
+
+  const deriveDiskName = useCallback(
+    (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        return DEFAULT_DISK_NAME;
+      }
+      return `${trimmed}-disk0`;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
@@ -126,7 +144,8 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
       setPowerOn(true);
       setVcpus(2);
       setMemoryMb(2048);
-      setDisk({ name: "disk0", pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new", existingVolume: undefined });
+      setDisk({ name: DEFAULT_DISK_NAME, pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new", existingVolume: undefined });
+      setDiskNameTouched(false);
       setIso({ enabled: false, pool: "" });
       setNetwork("");
       setMacAddress("");
@@ -137,6 +156,13 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
     }
     wasOpenRef.current = isOpen;
   }, [defaultHost, hosts, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (diskNameTouchedRef.current) return;
+    const autoName = deriveDiskName(guestName);
+    setDisk((prev) => (prev.name === autoName ? prev : { ...prev, name: autoName }));
+  }, [deriveDiskName, guestName, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -511,7 +537,11 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
                 <input
                   id="create-disk-name"
                   value={disk.name}
-                  onChange={(event) => setDisk((prev) => ({ ...prev, name: event.target.value }))}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setDiskNameTouched(true);
+                    setDisk((prev) => ({ ...prev, name: value }));
+                  }}
                   disabled={disableForm}
                 />
               </div>

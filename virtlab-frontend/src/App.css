@@ -199,6 +199,63 @@
   gap: 1rem;
 }
 
+.vm-move-form__checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 500;
+}
+
+.vm-move-modal__targets {
+  margin-bottom: 1rem;
+}
+
+.vm-move-modal__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.vm-move-modal__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.vm-move-modal__list li:last-child {
+  border-bottom: none;
+}
+
+.vm-move-modal__domain {
+  font-weight: 600;
+  color: #111827;
+}
+
+.vm-move-modal__host {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.vm-move-modal__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.vm-move-modal__controls select {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.35rem;
+  background: #fff;
+}
+
 .page-header h1 {
   margin: 0;
   font-size: 1.6rem;

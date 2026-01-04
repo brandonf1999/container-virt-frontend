@@ -451,3 +451,19 @@ export type ConsoleSession = {
   websocket_path: string;
   password: string;
 };
+
+export type GuestMoveRequest = {
+  target_host: string;
+  start?: boolean;
+  shutdown_timeout?: number;
+  force?: boolean;
+};
+
+export type GuestMoveResponse = {
+  source_host: string;
+  target_host: string;
+  domain: string;
+  uuid?: string | null;
+  started: boolean;
+  status: string;
+};

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useClusterVms } from "../hooks/useClusterVms";
 import { formatDuration, formatMemory } from "../utils/formatters";
 import { classifyVmState } from "../utils/vm";
-import { controlDomain, createConsoleSession, deleteGuestHost } from "../api";
+import { controlDomain, createConsoleSession, deleteGuestHost, moveGuestHost } from "../api";
 import type { ConsoleSession, VirtualMachine } from "../types";
 import { ColumnSelector, useTableState } from "../utils/table";
 import type { TableColumn } from "../utils/table";
@@ -12,6 +12,7 @@ import { CreateGuestModal } from "../components/CreateGuestModal";
 import { CloneGuestModal } from "../components/CloneGuestModal";
 import { DeleteConfirmationModal } from "../components/DeleteConfirmationModal";
 import { ConsoleViewerModal } from "../components/ConsoleViewerModal";
+import { MoveGuestsModal } from "../components/MoveGuestsModal";
 
 type PowerAction = "start" | "shutdown" | "reboot" | "force-off";
 
@@ -123,6 +124,8 @@ export function GuestHostsPage() {
     });
   }, [hosts]);
 
+  const hostOptions = useMemo(() => Object.keys(hosts).sort((a, b) => a.localeCompare(b)), [hosts]);
+
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [isActing, setIsActing] = useState(false);
@@ -140,6 +143,39 @@ export function GuestHostsPage() {
   const [shouldReconnectConsole, setShouldReconnectConsole] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<{ host: string; vm: VirtualMachine } | null>(null);
   const [isCloning, setIsCloning] = useState(false);
+  const [moveTargets, setMoveTargets] = useState<Array<{ host: string; vm: VirtualMachine }>>([]);
+  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
+  const [moveTargetHost, setMoveTargetHost] = useState("");
+  const [moveStartGuest, setMoveStartGuest] = useState(false);
+  const [isMovingGuest, setIsMovingGuest] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  const moveBlockedHosts = useMemo(() => {
+    const blocked = new Set<string>();
+    moveTargets.forEach((target) => {
+      blocked.add(target.host);
+    });
+    return blocked;
+  }, [moveTargets]);
+
+  const moveHostCandidates = useMemo(
+    () => hostOptions.filter((host) => !moveBlockedHosts.has(host)),
+    [hostOptions, moveBlockedHosts],
+  );
+
+  useEffect(() => {
+    if (!moveTargets.length) {
+      setMoveTargetHost("");
+      setMoveStartGuest(false);
+      return;
+    }
+    setMoveTargetHost((current) => {
+      if (current && moveHostCandidates.includes(current)) {
+        return current;
+      }
+      return moveHostCandidates[0] ?? "";
+    });
+  }, [moveTargets, moveHostCandidates]);
 
   const consoleVm = useMemo(() => {
     if (!consoleTarget) return null;
@@ -280,6 +316,96 @@ export function GuestHostsPage() {
     if (selected.size === 0) return [] as Array<{ host: string; vm: VirtualMachine }>;
     return vmRows.filter(({ host, vm }) => selected.has(vmKey(host, vm.name)));
   }, [selected, vmRows]);
+
+  const handleMoveRequest = useCallback(() => {
+    if (selectedTargets.length === 0) return;
+    setMoveTargets(selectedTargets);
+    setMoveError(null);
+    setMoveStartGuest(false);
+    setIsMoveModalOpen(true);
+  }, [selectedTargets]);
+
+  const handleCancelMove = useCallback(() => {
+    if (isMovingGuest) return;
+    setIsMoveModalOpen(false);
+    setMoveTargets([]);
+    setMoveError(null);
+    setMoveStartGuest(false);
+    setMoveTargetHost("");
+  }, [isMovingGuest]);
+
+  const handleConfirmMove = useCallback(async () => {
+    if (!moveTargets.length) return;
+    if (!moveTargetHost || !moveHostCandidates.includes(moveTargetHost)) {
+      setMoveError("Select a valid target host");
+      return;
+    }
+    setIsMoveModalOpen(false);
+    setIsMovingGuest(true);
+    setMoveError(null);
+    const selectionDetail = moveTargets.map((target) => `${target.vm.name}@${target.host}`).join(", ");
+    const entryId = addEntry({
+      title: `Move guest host${moveTargets.length === 1 ? "" : "s"}`,
+      detail: `${selectionDetail} -> ${moveTargetHost}`,
+      scope: "guest-hosts",
+      status: "pending",
+    });
+    const failures: string[] = [];
+    const results: Array<{ domain: string; started: boolean }> = [];
+    try {
+      await Promise.all(
+        moveTargets.map((target) =>
+          moveGuestHost(target.host, target.vm.name, {
+            target_host: moveTargetHost,
+            start: moveStartGuest,
+          })
+            .then((outcome) => {
+              results.push({ domain: outcome.domain, started: outcome.started });
+            })
+            .catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              failures.push(`${target.vm.name}@${target.host}: ${message}`);
+            }),
+        ),
+      );
+      refresh();
+      if (failures.length === 0) {
+        const movedSummary = results.length === 1 ? results[0].domain : `${results.length} guests`;
+        const startedAny = results.some((result) => result.started);
+        const suffix = (() => {
+          if (!startedAny) return "";
+          return results.length === 1 ? " and powered it on" : " and powered them on";
+        })();
+        setBannerMessage(`Moved ${movedSummary} to ${moveTargetHost}${suffix}.`);
+        updateEntry(entryId, {
+          status: "success",
+          detail: `${selectionDetail} -> ${moveTargetHost}`,
+        });
+        openPanel();
+        setIsMoveModalOpen(false);
+        setMoveTargets([]);
+        setMoveStartGuest(false);
+        setMoveTargetHost("");
+        clearSelection();
+      } else {
+        updateEntry(entryId, { status: "error", detail: failures.join("; ") });
+        setMoveError(failures.join(" "));
+        openPanel();
+      }
+    } finally {
+      setIsMovingGuest(false);
+    }
+  }, [
+    moveTargets,
+    moveTargetHost,
+    moveHostCandidates,
+    moveStartGuest,
+    addEntry,
+    updateEntry,
+    openPanel,
+    refresh,
+    clearSelection,
+  ]);
 
   useEffect(() => {
     if (!Object.keys(pendingActions).length) return;
@@ -442,7 +568,22 @@ export function GuestHostsPage() {
       return isRunningState(state);
     })();
 
-  const isBusy = isActing || isDeletingGuest || isConnecting || isCloning;
+  const canMove =
+    selectedTargets.length > 0 &&
+    (() => {
+      const selectedHosts = new Set<string>();
+      for (const target of selectedTargets) {
+        const key = vmKey(target.host, target.vm.name);
+        if (pendingActions[key]) return false;
+        const state = normalizeVmState(target.vm.state);
+        if (isTransitionalState(state)) return false;
+        selectedHosts.add(target.host);
+      }
+      const hasAlternative = hostOptions.some((host) => !selectedHosts.has(host));
+      return hasAlternative;
+    })();
+
+  const isBusy = isActing || isDeletingGuest || isConnecting || isCloning || isMovingGuest;
 
   const consolePowerPermissions = useMemo<Record<PowerAction, boolean> | null>(() => {
     if (!consoleTarget || !consoleVm) return null;
@@ -753,6 +894,52 @@ export function GuestHostsPage() {
     updateEntry,
   ]);
 
+  const launchConsoleViewer = useCallback(
+    async (host: string, name: string, entryId?: string, successDetail?: string) => {
+      if (isConnecting || isActing || isDeletingGuest) return false;
+      setIsConnecting(true);
+      setActionError(null);
+      setConsoleSession(null);
+      setIsConsoleOpen(false);
+      setConsoleTarget({ host, name });
+      try {
+        const session = await createConsoleSession(host, name);
+        setConsoleSession(session);
+        setIsConsoleOpen(true);
+        if (entryId) {
+          updateEntry(entryId, {
+            status: "success",
+            detail: successDetail ?? `Console viewer ready for ${name}@${host}.`,
+          });
+        }
+        openPanel();
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setActionError(message);
+        if (entryId) {
+          updateEntry(entryId, { status: "error", detail: message });
+        }
+        openPanel();
+        setConsoleTarget(null);
+        setConsoleSession(null);
+        setIsConsoleOpen(false);
+        return false;
+      } finally {
+        setIsConnecting(false);
+      }
+    },
+    [
+      createConsoleSession,
+      isActing,
+      isConnecting,
+      isDeletingGuest,
+      openPanel,
+      updateEntry,
+      setActionError,
+    ],
+  );
+
   const handleConnect = useCallback(async () => {
     if (isConnecting || isActing || isDeletingGuest) return;
     if (selectedTargets.length !== 1) return;
@@ -768,42 +955,13 @@ export function GuestHostsPage() {
       status: "pending",
     });
 
-    setIsConnecting(true);
-    setActionError(null);
-    try {
-      setConsoleSession(null);
-      setIsConsoleOpen(false);
-      setConsoleTarget({ host: target.host, name: target.vm.name });
-      const session = await createConsoleSession(target.host, target.vm.name);
-      setConsoleSession(session);
-      setIsConsoleOpen(true);
-      updateEntry(entryId, {
-        status: "success",
-        detail: `Console viewer ready for ${target.vm.name}@${target.host}.`,
-      });
-      openPanel();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setActionError(message);
-      updateEntry(entryId, { status: "error", detail: message });
-      openPanel();
-      setConsoleTarget(null);
-      setConsoleSession(null);
-      setIsConsoleOpen(false);
-    } finally {
-      setIsConnecting(false);
-    }
-  }, [
-    addEntry,
-    createConsoleSession,
-    isActing,
-    isConnecting,
-    isDeletingGuest,
-    openPanel,
-    selectedTargets,
-    setActionError,
-    updateEntry,
-  ]);
+    await launchConsoleViewer(
+      target.host,
+      target.vm.name,
+      entryId,
+      `Console viewer ready for ${target.vm.name}@${target.host}.`,
+    );
+  }, [addEntry, isActing, isConnecting, isDeletingGuest, launchConsoleViewer, selectedTargets]);
 
   const handleDeleteRequest = useCallback(() => {
     if (selectedTargets.length !== 1) return;
@@ -991,6 +1149,9 @@ export function GuestHostsPage() {
             <button type="button" onClick={handleCloneRequest} disabled={!canClone || isBusy}>
               Clone
             </button>
+            <button type="button" onClick={handleMoveRequest} disabled={!canMove || isBusy}>
+              Move
+            </button>
             <button
               type="button"
               className="vm-actions__button--danger"
@@ -1103,6 +1264,22 @@ export function GuestHostsPage() {
         )}
       </section>
 
+      <MoveGuestsModal
+        isOpen={isMoveModalOpen && moveTargets.length > 0}
+        targets={moveTargets}
+        availableHosts={moveHostCandidates}
+        selectedHost={moveTargetHost}
+        startAfterMove={moveStartGuest}
+        isSubmitting={isMovingGuest}
+        error={moveError}
+        onTargetHostChange={setMoveTargetHost}
+        onStartAfterMoveChange={setMoveStartGuest}
+        onClose={handleCancelMove}
+        onConfirm={() => {
+          void handleConfirmMove();
+        }}
+      />
+
       <CreateGuestModal
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
@@ -1116,6 +1293,13 @@ export function GuestHostsPage() {
             status: "success",
           });
           openPanel();
+          const entryId = addEntry({
+            title: "Open console viewer",
+            detail: `${name}@${host}`,
+            scope: "guest-hosts",
+            status: "pending",
+          });
+          void launchConsoleViewer(host, name, entryId, `Console viewer ready for ${name}@${host}.`);
           refresh();
         }}
         hosts={Object.keys(hosts)}
