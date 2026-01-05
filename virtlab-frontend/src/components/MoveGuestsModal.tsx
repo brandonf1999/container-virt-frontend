@@ -1,21 +1,25 @@
 import { useId } from "react";
 import type { VirtualMachine } from "../types";
 
-type MoveTarget = {
+type MigrationTarget = {
   host: string;
   vm: VirtualMachine;
 };
 
 type MoveGuestsModalProps = {
   isOpen: boolean;
-  targets: MoveTarget[];
+  targets: MigrationTarget[];
   availableHosts: string[];
   selectedHost: string;
-  startAfterMove: boolean;
+  actionLabel?: string;
+  actionProgressLabel?: string;
+  migrationMode: "live" | "cold";
+  startAfterMigration: boolean;
   isSubmitting: boolean;
   error?: string | null;
   onTargetHostChange: (value: string) => void;
-  onStartAfterMoveChange: (value: boolean) => void;
+  onMigrationModeChange: (value: "live" | "cold") => void;
+  onStartAfterMigrationChange: (value: boolean) => void;
   onClose: () => void;
   onConfirm: () => void;
 };
@@ -25,23 +29,32 @@ export function MoveGuestsModal({
   targets,
   availableHosts,
   selectedHost,
-  startAfterMove,
+  actionLabel,
+  actionProgressLabel,
+  migrationMode,
+  startAfterMigration,
   isSubmitting,
   error,
   onTargetHostChange,
-  onStartAfterMoveChange,
+  onMigrationModeChange,
+  onStartAfterMigrationChange,
   onClose,
   onConfirm,
 }: MoveGuestsModalProps) {
   const titleId = useId();
   const descriptionId = useId();
   const targetSelectId = useId();
+  const modeSelectId = useId();
 
   if (!isOpen) return null;
 
+  const action = actionLabel ?? "Migrate";
+  const progressLabel = actionProgressLabel ?? "Migrating…";
   const disableConfirm = isSubmitting || !selectedHost || availableHosts.length === 0;
   const summary =
-    targets.length === 1 ? "Move the selected guest to another host." : `Move ${targets.length} guests to another host.`;
+    targets.length === 1
+      ? `${action} the selected guest to another host.`
+      : `${action} ${targets.length} guests to another host.`;
 
   return (
     <div
@@ -61,7 +74,9 @@ export function MoveGuestsModal({
       >
         <header className="modal__header">
           <div>
-            <h2 id={titleId}>Move guest{targets.length === 1 ? "" : "s"}</h2>
+            <h2 id={titleId}>
+              {action} guest{targets.length === 1 ? "" : "s"}
+            </h2>
             <p id={descriptionId}>{summary}</p>
           </div>
           <button
@@ -108,14 +123,30 @@ export function MoveGuestsModal({
             </select>
           </div>
 
+          <div className="vm-move-modal__controls">
+            <label htmlFor={modeSelectId}>Migration mode</label>
+            <select
+              id={modeSelectId}
+              value={migrationMode}
+              onChange={(event) => onMigrationModeChange(event.target.value as "live" | "cold")}
+              disabled={isSubmitting}
+            >
+              <option value="live">Live (shared storage required)</option>
+              <option value="cold">Cold (shutdown + define)</option>
+            </select>
+            <div className="modal__field-note">
+              Live migration keeps the guest running and requires shared storage on both hosts.
+            </div>
+          </div>
+
           <label className="vm-move-form__checkbox">
             <input
               type="checkbox"
-              checked={startAfterMove}
-              onChange={(event) => onStartAfterMoveChange(event.target.checked)}
+              checked={startAfterMigration}
+              onChange={(event) => onStartAfterMigrationChange(event.target.checked)}
               disabled={isSubmitting}
             />
-            Start after move
+            Start after migration if the guest is stopped
           </label>
 
           {availableHosts.length === 0 && (
@@ -139,7 +170,7 @@ export function MoveGuestsModal({
               onClick={onConfirm}
               disabled={disableConfirm}
             >
-              {isSubmitting ? "Moving…" : "Confirm Move"}
+              {isSubmitting ? progressLabel : `Confirm ${action}`}
             </button>
           </div>
         </div>

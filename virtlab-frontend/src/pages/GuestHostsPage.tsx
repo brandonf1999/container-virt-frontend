@@ -50,19 +50,15 @@ function isTransitionalState(state: string) {
 
 const EMPTY_STATE = "No guest hosts reported yet.";
 
-function renderMemory(currentMb?: number | null, maxMb?: number | null) {
-  const current = formatMemory(currentMb ?? null);
-  const max = formatMemory(maxMb ?? null);
-  if (current === "--" && max === "--") return "--";
-  if (max !== "--") {
-    return `${current} / ${max}`;
-  }
-  return current;
+function renderMemoryUsage(usedMb?: number | null, totalMb?: number | null) {
+  const used = formatMemory(usedMb ?? null);
+  const total = formatMemory(totalMb ?? null);
+  if (used === "--" && total === "--") return "--";
+  return `${used} / ${total}`;
 }
 
 function computeDisplayUptime(vm: VirtualMachine, now: number) {
-  const base =
-    vm.displayUptimeSeconds ?? vm.metrics?.uptime_seconds ?? vm.metrics?.cpu_time_seconds ?? null;
+  const base = vm.displayUptimeSeconds ?? vm.metrics?.uptime_seconds ?? null;
   if (base === undefined || base === null) return null;
   const state = normalizeVmState(vm.state);
   if (isRunningState(state) && vm.fetchedAt) {
@@ -143,39 +139,41 @@ export function GuestHostsPage() {
   const [shouldReconnectConsole, setShouldReconnectConsole] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<{ host: string; vm: VirtualMachine } | null>(null);
   const [isCloning, setIsCloning] = useState(false);
-  const [moveTargets, setMoveTargets] = useState<Array<{ host: string; vm: VirtualMachine }>>([]);
-  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
-  const [moveTargetHost, setMoveTargetHost] = useState("");
-  const [moveStartGuest, setMoveStartGuest] = useState(false);
-  const [isMovingGuest, setIsMovingGuest] = useState(false);
-  const [moveError, setMoveError] = useState<string | null>(null);
+  const [migrateTargets, setMigrateTargets] = useState<Array<{ host: string; vm: VirtualMachine }>>([]);
+  const [isMigrateModalOpen, setIsMigrateModalOpen] = useState(false);
+  const [migrateTargetHost, setMigrateTargetHost] = useState("");
+  const [migrateStartGuest, setMigrateStartGuest] = useState(false);
+  const [migrateMode, setMigrateMode] = useState<"live" | "cold">("live");
+  const [isMigratingGuest, setIsMigratingGuest] = useState(false);
+  const [migrateError, setMigrateError] = useState<string | null>(null);
 
-  const moveBlockedHosts = useMemo(() => {
+  const migrateBlockedHosts = useMemo(() => {
     const blocked = new Set<string>();
-    moveTargets.forEach((target) => {
+    migrateTargets.forEach((target) => {
       blocked.add(target.host);
     });
     return blocked;
-  }, [moveTargets]);
+  }, [migrateTargets]);
 
-  const moveHostCandidates = useMemo(
-    () => hostOptions.filter((host) => !moveBlockedHosts.has(host)),
-    [hostOptions, moveBlockedHosts],
+  const migrateHostCandidates = useMemo(
+    () => hostOptions.filter((host) => !migrateBlockedHosts.has(host)),
+    [hostOptions, migrateBlockedHosts],
   );
 
   useEffect(() => {
-    if (!moveTargets.length) {
-      setMoveTargetHost("");
-      setMoveStartGuest(false);
+    if (!migrateTargets.length) {
+      setMigrateTargetHost("");
+      setMigrateStartGuest(false);
+      setMigrateMode("live");
       return;
     }
-    setMoveTargetHost((current) => {
-      if (current && moveHostCandidates.includes(current)) {
+    setMigrateTargetHost((current) => {
+      if (current && migrateHostCandidates.includes(current)) {
         return current;
       }
-      return moveHostCandidates[0] ?? "";
+      return migrateHostCandidates[0] ?? "";
     });
-  }, [moveTargets, moveHostCandidates]);
+  }, [migrateTargets, migrateHostCandidates]);
 
   const consoleVm = useMemo(() => {
     if (!consoleTarget) return null;
@@ -263,17 +261,20 @@ export function GuestHostsPage() {
       },
       {
         id: "memory",
-        label: "Memory",
+        label: "Memory (used / total)",
         sortable: true,
-        sortAccessor: ({ vm }) => vm.metrics?.memory_mb ?? null,
-        renderCell: ({ vm }) => renderMemory(vm.metrics?.memory_mb, vm.metrics?.max_memory_mb),
+        sortAccessor: ({ vm }) => vm.metrics?.used_memory_mb ?? vm.metrics?.total_memory_mb ?? vm.metrics?.memory_mb ?? null,
+        renderCell: ({ vm }) =>
+          renderMemoryUsage(
+            vm.metrics?.used_memory_mb ?? null,
+            vm.metrics?.total_memory_mb ?? vm.metrics?.memory_mb ?? vm.metrics?.max_memory_mb ?? null,
+          ),
       },
       {
         id: "uptime",
         label: "Uptime",
         sortable: true,
-        sortAccessor: ({ vm }) =>
-          vm.displayUptimeSeconds ?? vm.metrics?.uptime_seconds ?? vm.metrics?.cpu_time_seconds ?? null,
+        sortAccessor: ({ vm }) => vm.displayUptimeSeconds ?? vm.metrics?.uptime_seconds ?? null,
         renderCell: ({ vm }) => renderUptime(vm, now),
       },
       {
@@ -317,36 +318,39 @@ export function GuestHostsPage() {
     return vmRows.filter(({ host, vm }) => selected.has(vmKey(host, vm.name)));
   }, [selected, vmRows]);
 
-  const handleMoveRequest = useCallback(() => {
+  const handleMigrateRequest = useCallback(() => {
     if (selectedTargets.length === 0) return;
-    setMoveTargets(selectedTargets);
-    setMoveError(null);
-    setMoveStartGuest(false);
-    setIsMoveModalOpen(true);
+    setMigrateTargets(selectedTargets);
+    setMigrateError(null);
+    setMigrateStartGuest(false);
+    setMigrateMode("live");
+    setIsMigrateModalOpen(true);
   }, [selectedTargets]);
 
-  const handleCancelMove = useCallback(() => {
-    if (isMovingGuest) return;
-    setIsMoveModalOpen(false);
-    setMoveTargets([]);
-    setMoveError(null);
-    setMoveStartGuest(false);
-    setMoveTargetHost("");
-  }, [isMovingGuest]);
+  const handleCancelMigrate = useCallback(() => {
+    if (isMigratingGuest) return;
+    setIsMigrateModalOpen(false);
+    setMigrateTargets([]);
+    setMigrateError(null);
+    setMigrateStartGuest(false);
+    setMigrateMode("live");
+    setMigrateTargetHost("");
+  }, [isMigratingGuest]);
 
-  const handleConfirmMove = useCallback(async () => {
-    if (!moveTargets.length) return;
-    if (!moveTargetHost || !moveHostCandidates.includes(moveTargetHost)) {
-      setMoveError("Select a valid target host");
+  const handleConfirmMigrate = useCallback(async () => {
+    if (!migrateTargets.length) return;
+    if (!migrateTargetHost || !migrateHostCandidates.includes(migrateTargetHost)) {
+      setMigrateError("Select a valid target host");
       return;
     }
-    setIsMoveModalOpen(false);
-    setIsMovingGuest(true);
-    setMoveError(null);
-    const selectionDetail = moveTargets.map((target) => `${target.vm.name}@${target.host}`).join(", ");
+    setIsMigrateModalOpen(false);
+    setIsMigratingGuest(true);
+    setMigrateError(null);
+    const selectionDetail = migrateTargets.map((target) => `${target.vm.name}@${target.host}`).join(", ");
+    const migrationLabel = migrateMode === "live" ? "live" : "cold";
     const entryId = addEntry({
-      title: `Move guest host${moveTargets.length === 1 ? "" : "s"}`,
-      detail: `${selectionDetail} -> ${moveTargetHost}`,
+      title: `Migrate guest host${migrateTargets.length === 1 ? "" : "s"}`,
+      detail: `${selectionDetail} -> ${migrateTargetHost} (${migrationLabel})`,
       scope: "guest-hosts",
       status: "pending",
     });
@@ -354,10 +358,11 @@ export function GuestHostsPage() {
     const results: Array<{ domain: string; started: boolean }> = [];
     try {
       await Promise.all(
-        moveTargets.map((target) =>
+        migrateTargets.map((target) =>
           moveGuestHost(target.host, target.vm.name, {
-            target_host: moveTargetHost,
-            start: moveStartGuest,
+            target_host: migrateTargetHost,
+            start: migrateStartGuest,
+            mode: migrateMode,
           })
             .then((outcome) => {
               results.push({ domain: outcome.domain, started: outcome.started });
@@ -376,30 +381,32 @@ export function GuestHostsPage() {
           if (!startedAny) return "";
           return results.length === 1 ? " and powered it on" : " and powered them on";
         })();
-        setBannerMessage(`Moved ${movedSummary} to ${moveTargetHost}${suffix}.`);
+        setBannerMessage(`Migrated ${movedSummary} to ${migrateTargetHost} (${migrationLabel})${suffix}.`);
         updateEntry(entryId, {
           status: "success",
-          detail: `${selectionDetail} -> ${moveTargetHost}`,
+          detail: `${selectionDetail} -> ${migrateTargetHost} (${migrationLabel})`,
         });
         openPanel();
-        setIsMoveModalOpen(false);
-        setMoveTargets([]);
-        setMoveStartGuest(false);
-        setMoveTargetHost("");
+        setIsMigrateModalOpen(false);
+        setMigrateTargets([]);
+        setMigrateStartGuest(false);
+        setMigrateMode("live");
+        setMigrateTargetHost("");
         clearSelection();
       } else {
         updateEntry(entryId, { status: "error", detail: failures.join("; ") });
-        setMoveError(failures.join(" "));
+        setMigrateError(failures.join(" "));
         openPanel();
       }
     } finally {
-      setIsMovingGuest(false);
+      setIsMigratingGuest(false);
     }
   }, [
-    moveTargets,
-    moveTargetHost,
-    moveHostCandidates,
-    moveStartGuest,
+    migrateTargets,
+    migrateTargetHost,
+    migrateHostCandidates,
+    migrateStartGuest,
+    migrateMode,
     addEntry,
     updateEntry,
     openPanel,
@@ -568,7 +575,7 @@ export function GuestHostsPage() {
       return isRunningState(state);
     })();
 
-  const canMove =
+  const canMigrate =
     selectedTargets.length > 0 &&
     (() => {
       const selectedHosts = new Set<string>();
@@ -583,7 +590,7 @@ export function GuestHostsPage() {
       return hasAlternative;
     })();
 
-  const isBusy = isActing || isDeletingGuest || isConnecting || isCloning || isMovingGuest;
+  const isBusy = isActing || isDeletingGuest || isConnecting || isCloning || isMigratingGuest;
 
   const consolePowerPermissions = useMemo<Record<PowerAction, boolean> | null>(() => {
     if (!consoleTarget || !consoleVm) return null;
@@ -1019,7 +1026,7 @@ export function GuestHostsPage() {
   }, [addEntry, clearSelection, deleteTarget, openPanel, refresh, removeStorage, updateEntry, setActionError, setBannerMessage]);
 
   const vmTable = useTableState(vmColumns, vmRows, {
-    defaultVisible: ["state", "name", "host", "vcpus", "memory", "persistent"],
+    defaultVisible: ["state", "name", "host", "vcpus", "memory"],
     storageKey: "guest-hosts-columns",
     initialSort: { columnId: "name", direction: "asc" },
   });
@@ -1149,8 +1156,8 @@ export function GuestHostsPage() {
             <button type="button" onClick={handleCloneRequest} disabled={!canClone || isBusy}>
               Clone
             </button>
-            <button type="button" onClick={handleMoveRequest} disabled={!canMove || isBusy}>
-              Move
+            <button type="button" onClick={handleMigrateRequest} disabled={!canMigrate || isBusy}>
+              Migrate
             </button>
             <button
               type="button"
@@ -1265,18 +1272,22 @@ export function GuestHostsPage() {
       </section>
 
       <MoveGuestsModal
-        isOpen={isMoveModalOpen && moveTargets.length > 0}
-        targets={moveTargets}
-        availableHosts={moveHostCandidates}
-        selectedHost={moveTargetHost}
-        startAfterMove={moveStartGuest}
-        isSubmitting={isMovingGuest}
-        error={moveError}
-        onTargetHostChange={setMoveTargetHost}
-        onStartAfterMoveChange={setMoveStartGuest}
-        onClose={handleCancelMove}
+        isOpen={isMigrateModalOpen && migrateTargets.length > 0}
+        targets={migrateTargets}
+        availableHosts={migrateHostCandidates}
+        selectedHost={migrateTargetHost}
+        actionLabel="Migrate"
+        actionProgressLabel="Migrating…"
+        migrationMode={migrateMode}
+        startAfterMigration={migrateStartGuest}
+        isSubmitting={isMigratingGuest}
+        error={migrateError}
+        onTargetHostChange={setMigrateTargetHost}
+        onMigrationModeChange={setMigrateMode}
+        onStartAfterMigrationChange={setMigrateStartGuest}
+        onClose={handleCancelMigrate}
         onConfirm={() => {
-          void handleConfirmMove();
+          void handleConfirmMigrate();
         }}
       />
 

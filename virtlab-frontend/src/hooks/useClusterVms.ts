@@ -16,8 +16,7 @@ const POLL_INTERVAL_MS = 3000;
 const VM_RUNNING_STATES = new Set(["running", "blocked"]);
 
 function computeDisplayUptimeAt(vm: VirtualMachine, timestamp: number): number | null {
-  const base =
-    vm.displayUptimeSeconds ?? vm.metrics?.uptime_seconds ?? vm.metrics?.cpu_time_seconds ?? null;
+  const base = vm.displayUptimeSeconds ?? vm.metrics?.uptime_seconds ?? null;
   if (base === null || base === undefined) return null;
 
   const state = (vm.state ?? "").toLowerCase();
@@ -54,7 +53,7 @@ export function useClusterVms() {
               const metrics = vm.metrics ? { ...vm.metrics } : null;
               const prevVm = prevVms.find((candidate) => candidate.name === vm.name);
               const prevDisplay = prevVm ? computeDisplayUptimeAt(prevVm, fetchedAt) : null;
-              const rawBase = metrics?.uptime_seconds ?? metrics?.cpu_time_seconds ?? null;
+              const rawBase = metrics?.uptime_seconds ?? null;
               let displayUptimeSeconds: number | null | undefined = undefined;
               if (rawBase != null || prevDisplay != null) {
                 const base = rawBase ?? 0;

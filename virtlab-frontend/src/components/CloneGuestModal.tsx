@@ -233,14 +233,23 @@ export function CloneGuestModal({
 
           {formError && <div className="panel__status panel__status--error">{formError}</div>}
 
-          <footer className="modal__footer">
-            <button type="button" className="link-button" onClick={onClose} disabled={isSubmitting}>
+          <div className="modal__actions">
+            <button
+              type="button"
+              className="hosts-table__action-button"
+              onClick={onClose}
+              disabled={isSubmitting}
+            >
               Cancel
             </button>
-            <button type="submit" disabled={disableSubmit}>
+            <button
+              type="submit"
+              className="hosts-table__action-button"
+              disabled={disableSubmit}
+            >
               {isSubmitting ? "Cloning…" : "Clone Guest"}
             </button>
-          </footer>
+          </div>
         </form>
       </div>
     </div>
