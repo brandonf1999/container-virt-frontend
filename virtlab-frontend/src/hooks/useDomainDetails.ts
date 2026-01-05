@@ -6,16 +6,10 @@ const POLL_INTERVAL_MS = 3000;
 
 function deriveUptimeSeconds(details: DomainDetails | null | undefined): number | null {
   if (!details) return null;
-  const dominfo = details.dominfo as Record<string, unknown> | undefined;
-  if (!dominfo) return null;
-  const cpuTime = typeof dominfo.cpuTime === "number" ? dominfo.cpuTime : null;
-  const vcpus = typeof dominfo.nrVirtCpu === "number" ? dominfo.nrVirtCpu : null;
-  if (cpuTime === null) return null;
-  const cpuSeconds = cpuTime / 1_000_000_000;
-  const divisor = Math.max(vcpus ?? 1, 1);
-  const uptime = cpuSeconds / divisor;
-  if (!Number.isFinite(uptime) || uptime < 0) return null;
-  return Number(uptime.toFixed(2));
+  if (typeof details.guest_uptime_seconds === "number") {
+    return details.guest_uptime_seconds;
+  }
+  return null;
 }
 
 type LoadOptions = {

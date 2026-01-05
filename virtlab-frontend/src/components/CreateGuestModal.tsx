@@ -69,6 +69,7 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
   const [powerOn, setPowerOn] = useState(true);
   const [vcpus, setVcpus] = useState(2);
   const [memoryMb, setMemoryMb] = useState(2048);
+  const [cpuMode, setCpuMode] = useState<"host-model" | "host-passthrough">("host-model");
   const [disk, setDisk] = useState<VolumeState>({ name: DEFAULT_DISK_NAME, pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new" });
   const [diskNameTouched, setDiskNameTouched] = useState(false);
   const [iso, setIso] = useState<IsoState>({ enabled: false, pool: "" });
@@ -144,6 +145,7 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
       setPowerOn(true);
       setVcpus(2);
       setMemoryMb(2048);
+      setCpuMode("host-model");
       setDisk({ name: DEFAULT_DISK_NAME, pool: "", sizeMb: 20 * 1024, format: "qcow2", mode: "new", existingVolume: undefined });
       setDiskNameTouched(false);
       setIso({ enabled: false, pool: "" });
@@ -329,6 +331,7 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
       start: powerOn,
       vcpus,
       memory_mb: memoryMb,
+      cpu_mode: cpuMode,
       volumes: [
         diskVolume,
         ...(iso.enabled && iso.volume
@@ -497,6 +500,22 @@ export function CreateGuestModal({ isOpen, onClose, onCreated, hosts, defaultHos
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="modal__field">
+                <label htmlFor="create-guest-cpu-mode">CPU mode</label>
+                <select
+                  id="create-guest-cpu-mode"
+                  value={cpuMode}
+                  onChange={(event) => setCpuMode(event.target.value as "host-model" | "host-passthrough")}
+                  disabled={disableForm}
+                >
+                  <option value="host-model">Host model (default)</option>
+                  <option value="host-passthrough">Host passthrough</option>
+                </select>
+                <p className="modal__field-note">
+                  Host model is safest for migration; host passthrough exposes the full CPU features.
+                </p>
               </div>
 
               <div className="modal__field">

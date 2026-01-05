@@ -280,7 +280,7 @@ export async function moveGuestHost(
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    let message = `Move guest HTTP ${res.status}`;
+    let message = `Migrate guest HTTP ${res.status}`;
     try {
       const data = (await res.json()) as { detail?: unknown } | null;
       const detail = data?.detail ?? data;

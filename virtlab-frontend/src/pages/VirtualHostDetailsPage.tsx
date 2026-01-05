@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDomainDetails } from "../hooks/useDomainDetails";
+import { useClusterVms } from "../hooks/useClusterVms";
 import { classifyVmState } from "../utils/vm";
 import { formatBytes, formatDuration, formatMemory, formatPercent } from "../utils/formatters";
-import { controlDomain, createConsoleSession, deleteGuestHost, detachGuestBlockDevice } from "../api";
+import { controlDomain, createConsoleSession, deleteGuestHost, detachGuestBlockDevice, moveGuestHost } from "../api";
 import { useActivityLog } from "../hooks/useActivityLog";
 import { DeleteConfirmationModal } from "../components/DeleteConfirmationModal";
 import { ConsoleViewerModal } from "../components/ConsoleViewerModal";
 import { CloneGuestModal } from "../components/CloneGuestModal";
-import type { ConsoleSession } from "../types";
+import { MoveGuestsModal } from "../components/MoveGuestsModal";
+import type { ConsoleSession, VirtualMachine } from "../types";
 
 type PowerAction = "start" | "shutdown" | "reboot" | "force-off";
 
@@ -47,21 +49,10 @@ const STATS_OPTIONS = [
 type ResourceView = (typeof RESOURCE_OPTIONS)[number]["id"];
 type StatsView = (typeof STATS_OPTIONS)[number]["id"];
 
-type MemoryMetricSource =
-  | "actual"
-  | "dominfo-max"
-  | "dominfo-current"
-  | "actual-unused"
-  | "rss"
-  | "balloon"
-  | "fallback"
-  | "unused"
-  | "derived"
-  | "available"
-  | "usable"
-  | "free";
+type MemoryMetricSource = string;
 
 type GuestMemoryMetrics = {
+  maxMb: number | null;
   totalMb: number | null;
   usedMb: number | null;
   freeMb: number | null;
@@ -71,10 +62,11 @@ type GuestMemoryMetrics = {
   swapInKiB: number | null;
   swapOutKiB: number | null;
   sources: {
+    max: MemoryMetricSource | null;
     total: MemoryMetricSource | null;
     used: MemoryMetricSource | null;
     free: MemoryMetricSource | null;
-  available: MemoryMetricSource | null;
+    available: MemoryMetricSource | null;
   };
 };
 
@@ -91,7 +83,22 @@ const MEMORY_SOURCE_LABELS: Record<MemoryMetricSource, string> = {
   available: "Available memory reported by balloon",
   usable: "Usable memory reported by balloon",
   free: "Matches unused balloon pages",
+  "memory_stats.actual": "Actual allocation from dommemstat.actual",
+  "memory_stats.balloon": "Balloon allocation from dommemstat.balloon",
+  "dominfo.maxMem": "Max memory from domain definition",
+  "dominfo.memory": "Current memory from dominfo",
+  "memory_stats.unused": "Unused balloon pages from dommemstat.unused",
+  "memory_stats.free": "Free memory from dommemstat.free",
+  "memory_stats.available": "Available memory from dommemstat.available",
+  "memory_stats.usable": "Usable memory from dommemstat.usable",
+  "memory_stats.rss": "Resident set size from dommemstat.rss",
 };
+
+function formatMemorySourceLabel(source?: string | null): string | null {
+  if (!source) return null;
+  const parts = source.split(" - ").map((part) => MEMORY_SOURCE_LABELS[part] ?? part);
+  return parts.join(" - ");
+}
 
 type CpuMetricSource =
   | "stats-vcpu"
@@ -170,10 +177,11 @@ type BlockEntry = {
   };
 };
 
-function formatMemoryFromKiB(value?: number) {
-  if (typeof value !== "number") return "--";
-  const mb = value / 1024;
-  return formatMemory(mb);
+function renderMemoryUsage(usedMb?: number | null, totalMb?: number | null) {
+  const used = formatMemory(usedMb ?? null);
+  const total = formatMemory(totalMb ?? null);
+  if (used === "--" && total === "--") return "--";
+  return `${used} / ${total}`;
 }
 
 function formatKeyValue(value: unknown): string {
@@ -202,6 +210,7 @@ export function VirtualHostDetailsPage() {
     fetchedAt,
     displayUptimeSeconds,
   } = useDomainDetails(hostname, domainName);
+  const { hosts: clusterHosts } = useClusterVms();
   const { addEntry, updateEntry, openPanel } = useActivityLog();
 
   const dominfo = (details?.dominfo ?? null) as Record<string, number> | null;
@@ -235,6 +244,12 @@ export function VirtualHostDetailsPage() {
   const [removeStorage, setRemoveStorage] = useState(false);
   const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
   const [isCloneBusy, setIsCloneBusy] = useState(false);
+  const [isMigrateModalOpen, setIsMigrateModalOpen] = useState(false);
+  const [migrateTargetHost, setMigrateTargetHost] = useState("");
+  const [migrateStartGuest, setMigrateStartGuest] = useState(false);
+  const [migrateMode, setMigrateMode] = useState<"live" | "cold">("live");
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrateError, setMigrateError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -255,12 +270,16 @@ export function VirtualHostDetailsPage() {
   }, [displayUptimeSeconds, fetchedAt, normalizedState, now]);
 
   const vcpus = dominfo && typeof dominfo.nrVirtCpu === "number" ? dominfo.nrVirtCpu : "--";
-  const memoryCurrent = dominfo && typeof dominfo.memory === "number" ? formatMemoryFromKiB(dominfo.memory) : "--";
-  const memoryMax = dominfo && typeof dominfo.maxMem === "number" ? formatMemoryFromKiB(dominfo.maxMem) : "--";
   const dominfoMemoryKiB = dominfo && typeof dominfo.memory === "number" ? dominfo.memory : undefined;
   const dominfoMaxMemoryKiB = dominfo && typeof dominfo.maxMem === "number" ? dominfo.maxMem : undefined;
-  const cpuTime =
-    dominfo && typeof dominfo.cpuTime === "number" ? formatDuration(dominfo.cpuTime / 1_000_000_000) : "--";
+  const memorySummary = details?.memory_summary ?? null;
+  const memoryTotalMb = typeof memorySummary?.total_mb === "number" ? memorySummary.total_mb : null;
+  const memoryUsedMb = typeof memorySummary?.used_mb === "number" ? memorySummary.used_mb : null;
+  const memoryTotalFallbackMb =
+    memoryTotalMb ??
+    (typeof dominfoMemoryKiB === "number" ? dominfoMemoryKiB / 1024 : null) ??
+    (typeof dominfoMaxMemoryKiB === "number" ? dominfoMaxMemoryKiB / 1024 : null);
+  const memoryUsage = renderMemoryUsage(memoryUsedMb, memoryTotalFallbackMb);
   const autostart =
     details && details.autostart !== undefined && details.autostart !== null
       ? details.autostart
@@ -357,6 +376,41 @@ export function VirtualHostDetailsPage() {
     !isDeleting &&
     !isConnecting &&
     !isRunningState(normalizedState);
+
+  const migrateHostCandidates = useMemo(() => {
+    if (!hostname) return [] as string[];
+    return Object.keys(clusterHosts)
+      .filter((host) => host !== hostname)
+      .sort((a, b) => a.localeCompare(b));
+  }, [clusterHosts, hostname]);
+
+  const canMigrate =
+    !isActing &&
+    !busy &&
+    !transitional &&
+    !isDeleting &&
+    !isMigrating &&
+    migrateHostCandidates.length > 0;
+
+  const migrateTargets = useMemo(() => {
+    if (!hostname || !domainName) return [] as Array<{ host: string; vm: VirtualMachine }>;
+    const state = rawState || "unknown";
+    return [{ host: hostname, vm: { name: domainName, state } }];
+  }, [domainName, hostname, rawState]);
+
+  useEffect(() => {
+    if (!isMigrateModalOpen) return;
+    if (!migrateHostCandidates.length) {
+      setMigrateTargetHost("");
+      return;
+    }
+    setMigrateTargetHost((current) => {
+      if (current && migrateHostCandidates.includes(current)) {
+        return current;
+      }
+      return migrateHostCandidates[0] ?? "";
+    });
+  }, [isMigrateModalOpen, migrateHostCandidates]);
 
   const displayStateMeta = useMemo(() => {
     if (!pendingAction) return baseStateMeta;
@@ -621,6 +675,78 @@ export function VirtualHostDetailsPage() {
     updateEntry,
   ]);
 
+  const handleOpenMigrate = useCallback(() => {
+    if (!hostname || !domainName) return;
+    setMigrateError(null);
+    setMigrateStartGuest(false);
+    setMigrateMode("live");
+    setIsMigrateModalOpen(true);
+  }, [domainName, hostname]);
+
+  const handleCancelMigrate = useCallback(() => {
+    if (isMigrating) return;
+    setIsMigrateModalOpen(false);
+    setMigrateError(null);
+    setMigrateStartGuest(false);
+    setMigrateMode("live");
+    setMigrateTargetHost("");
+  }, [isMigrating]);
+
+  const handleConfirmMigrate = useCallback(async () => {
+    if (!hostname || !domainName) return;
+    if (!migrateTargetHost || !migrateHostCandidates.includes(migrateTargetHost)) {
+      setMigrateError("Select a valid target host");
+      return;
+    }
+    setIsMigrateModalOpen(false);
+    setIsMigrating(true);
+    setMigrateError(null);
+    const migrationLabel = migrateMode === "live" ? "live" : "cold";
+    const entryId = addEntry({
+      title: "Migrate guest host",
+      detail: `${domainName}@${hostname} -> ${migrateTargetHost} (${migrationLabel})`,
+      scope: "guest-host",
+      status: "pending",
+    });
+    try {
+      const result = await moveGuestHost(hostname, domainName, {
+        target_host: migrateTargetHost,
+        start: migrateStartGuest,
+        mode: migrateMode,
+      });
+      updateEntry(entryId, {
+        status: "success",
+        detail: `${result.domain}@${result.target_host} (${migrationLabel})`,
+      });
+      openPanel();
+      refresh();
+      if (result.target_host && result.target_host !== hostname) {
+        const newDomainPath = `/guest-hosts/${encodeURIComponent(result.target_host)}/${encodeURIComponent(result.domain)}`;
+        navigate(newDomainPath);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setActionError(message);
+      updateEntry(entryId, { status: "error", detail: message });
+      openPanel();
+    } finally {
+      setIsMigrating(false);
+    }
+  }, [
+    addEntry,
+    domainName,
+    hostname,
+    migrateMode,
+    migrateHostCandidates,
+    migrateStartGuest,
+    migrateTargetHost,
+    navigate,
+    openPanel,
+    refresh,
+    setActionError,
+    updateEntry,
+  ]);
+
   const handleDelete = useCallback(() => {
     if (!hostname || !domainName) return;
     if (!canDelete) return;
@@ -721,6 +847,7 @@ export function VirtualHostDetailsPage() {
 
   const guestMemoryMetrics = useMemo<GuestMemoryMetrics | null>(() => {
     const stats = details?.memory_stats;
+    const summary = details?.memory_summary ?? null;
     const readStat = (key: string): number | null => {
       if (!stats) return null;
       const value = stats[key as keyof typeof stats];
@@ -730,13 +857,55 @@ export function VirtualHostDetailsPage() {
       return value;
     };
 
+    const rssKiB = readStat("rss");
+    const swapInKiB = readStat("swap_in");
+    const swapOutKiB = readStat("swap_out");
+
+    const summaryMaxMb = typeof summary?.max_mb === "number" ? summary.max_mb : null;
+    const summaryTotalMb = typeof summary?.total_mb === "number" ? summary.total_mb : null;
+    const summaryUsedMb = typeof summary?.used_mb === "number" ? summary.used_mb : null;
+    const summaryFreeMb = typeof summary?.free_mb === "number" ? summary.free_mb : null;
+    const summaryAvailableMb = typeof summary?.available_mb === "number" ? summary.available_mb : null;
+    const summarySources = {
+      max: summary?.max_source ?? null,
+      total: summary?.total_source ?? null,
+      used: summary?.used_source ?? null,
+      free: summary?.free_source ?? null,
+      available: summary?.available_source ?? null,
+    };
+
+    const summaryHasData =
+      summaryMaxMb != null ||
+      summaryTotalMb != null ||
+      summaryUsedMb != null ||
+      summaryFreeMb != null ||
+      summaryAvailableMb != null;
+
+    const rssMb = rssKiB != null ? rssKiB / 1024 : null;
+    const summaryUsagePercent =
+      summaryUsedMb != null && summaryTotalMb != null && summaryTotalMb > 0
+        ? Number(Math.min(Math.max((summaryUsedMb / summaryTotalMb) * 100, 0), 100).toFixed(1))
+        : null;
+
+    if (summaryHasData) {
+      return {
+        maxMb: summaryMaxMb,
+        totalMb: summaryTotalMb,
+        usedMb: summaryUsedMb,
+        freeMb: summaryFreeMb,
+        availableMb: summaryAvailableMb,
+        rssMb,
+        usagePercent: summaryUsagePercent,
+        swapInKiB: swapInKiB ?? null,
+        swapOutKiB: swapOutKiB ?? null,
+        sources: summarySources,
+      };
+    }
+
     const actualKiB = readStat("actual");
     const unusedKiB = readStat("unused");
     const availableKiBRaw = readStat("available");
     const usableKiBRaw = readStat("usable");
-    const rssKiB = readStat("rss");
-    const swapInKiB = readStat("swap_in");
-    const swapOutKiB = readStat("swap_out");
 
     let totalKiB: number | null = null;
     let totalSource: MemoryMetricSource | null = null;
@@ -806,33 +975,29 @@ export function VirtualHostDetailsPage() {
       return value / 1024;
     };
 
-    if (
-      totalKiB == null &&
-      usedKiB == null &&
-      freeKiB == null &&
-      availableKiB == null &&
-      rssKiB == null
-    ) {
+    if (totalKiB == null && usedKiB == null && freeKiB == null && availableKiB == null && rssKiB == null) {
       return null;
     }
 
     return {
+      maxMb: dominfoMaxMemoryKiB != null ? dominfoMaxMemoryKiB / 1024 : null,
       totalMb: toMb(totalKiB),
       usedMb: toMb(usedKiB),
       freeMb: toMb(freeKiB),
       availableMb: toMb(availableKiB),
-      rssMb: toMb(rssKiB),
+      rssMb,
       usagePercent,
       swapInKiB: swapInKiB ?? null,
       swapOutKiB: swapOutKiB ?? null,
       sources: {
+        max: dominfoMaxMemoryKiB != null ? "dominfo-max" : null,
         total: totalSource,
         used: usedSource,
         free: freeSource,
         available: availableSource,
       },
     } as GuestMemoryMetrics;
-  }, [details?.memory_stats, dominfoMaxMemoryKiB, dominfoMemoryKiB]);
+  }, [details?.memory_stats, details?.memory_summary, dominfoMaxMemoryKiB, dominfoMemoryKiB]);
 
   const guestCpuMetrics = useMemo<GuestCpuMetrics | null>(() => {
     const stats = details?.stats;
@@ -908,7 +1073,8 @@ export function VirtualHostDetailsPage() {
   const memoryCardMeta = useMemo(() => {
     if (!guestMemoryMetrics) return null;
 
-    const meta: Record<"total" | "used" | "free" | "available" | "rss" | "utilization", string[]> = {
+    const meta: Record<"max" | "total" | "used" | "free" | "available" | "rss" | "utilization", string[]> = {
+      max: [],
       total: [],
       used: [],
       free: [],
@@ -925,10 +1091,11 @@ export function VirtualHostDetailsPage() {
 
     const sourceLabels = guestMemoryMetrics.sources;
 
-    append("total", sourceLabels.total ? MEMORY_SOURCE_LABELS[sourceLabels.total] : null);
-    append("used", sourceLabels.used ? MEMORY_SOURCE_LABELS[sourceLabels.used] : null);
-    append("free", sourceLabels.free ? MEMORY_SOURCE_LABELS[sourceLabels.free] : null);
-    append("available", sourceLabels.available ? MEMORY_SOURCE_LABELS[sourceLabels.available] : null);
+    append("max", formatMemorySourceLabel(sourceLabels.max));
+    append("total", formatMemorySourceLabel(sourceLabels.total));
+    append("used", formatMemorySourceLabel(sourceLabels.used));
+    append("free", formatMemorySourceLabel(sourceLabels.free));
+    append("available", formatMemorySourceLabel(sourceLabels.available));
 
     if (guestMemoryMetrics.swapInKiB != null || guestMemoryMetrics.swapOutKiB != null) {
       const swapParts: string[] = [];
@@ -947,9 +1114,7 @@ export function VirtualHostDetailsPage() {
       append("rss", "Resident set size from dommemstat.rss");
     }
 
-    if (sourceLabels.used) {
-      append("utilization", MEMORY_SOURCE_LABELS[sourceLabels.used]);
-    }
+    append("utilization", formatMemorySourceLabel(sourceLabels.used));
 
     return meta;
   }, [guestMemoryMetrics]);
@@ -995,13 +1160,8 @@ export function VirtualHostDetailsPage() {
 
   const domainStatRows = useMemo(() => domainStatsEntries, [domainStatsEntries]);
 
-  const cpuTimeStatEntry = domainStatRows.find(([key]) => key === "cpu.time");
-  const cpuTimeStat =
-    cpuTimeStatEntry && typeof cpuTimeStatEntry[1] === "number"
-      ? formatDuration(cpuTimeStatEntry[1] / 1_000_000_000)
-      : "--";
-
-  const displayUptime = derivedUptimeSeconds != null ? formatDuration(derivedUptimeSeconds) : "--";
+  const guestUptimeSeconds = details?.guest_uptime_seconds ?? null;
+  const displayGuestUptime = guestUptimeSeconds != null ? formatDuration(guestUptimeSeconds) : "--";
 
   const resourceContent = useMemo(() => {
     if (resourceView === "block") {
@@ -1089,6 +1249,18 @@ export function VirtualHostDetailsPage() {
           return true;
         });
       };
+      const splitAddresses = (values: string[]) => {
+        const ipv4: string[] = [];
+        const ipv6: string[] = [];
+        values.forEach((value) => {
+          if (value.includes(":")) {
+            ipv6.push(value);
+          } else {
+            ipv4.push(value);
+          }
+        });
+        return { ipv4, ipv6 };
+      };
 
       return (
         <div className="table-wrapper">
@@ -1104,7 +1276,7 @@ export function VirtualHostDetailsPage() {
               </tr>
             </thead>
             <tbody>
-              {interfaces.map((iface, index) => {
+              {interfaces.flatMap((iface, index) => {
                 const key = iface.target ?? iface.mac ?? `iface-${index}`;
                 const addresses = Array.isArray(iface.addresses)
                   ? iface.addresses
@@ -1116,21 +1288,39 @@ export function VirtualHostDetailsPage() {
                       .filter((value): value is string => typeof value === "string" && value.length > 0)
                   : [];
                 const cleanedAddresses = sanitizeAddresses(addresses);
+                const { ipv4, ipv6 } = splitAddresses(cleanedAddresses);
                 const rxBytes = iface.stats ? formatBytes(iface.stats.rx_bytes ?? 0) : "--";
                 const txBytes = iface.stats ? formatBytes(iface.stats.tx_bytes ?? 0) : "--";
                 const rxPackets = iface.stats?.rx_packets ?? 0;
                 const txPackets = iface.stats?.tx_packets ?? 0;
                 const errorCount = (iface.stats?.rx_errors ?? 0) + (iface.stats?.tx_errors ?? 0);
-                return (
-                  <tr key={key}>
-                    <td>{iface.target ?? "--"}</td>
-                    <td>{iface.mac ?? "--"}</td>
-                    <td>{cleanedAddresses.length ? cleanedAddresses.join(", ") : "--"}</td>
-                    <td>{iface.stats ? `${rxBytes} (${rxPackets} pkts)` : "--"}</td>
-                    <td>{iface.stats ? `${txBytes} (${txPackets} pkts)` : "--"}</td>
-                    <td>{iface.stats ? errorCount : "--"}</td>
-                  </tr>
-                );
+                const hasIpv4 = ipv4.length > 0;
+                const hasIpv6 = ipv6.length > 0;
+                if (!hasIpv4 || !hasIpv6) {
+                  return [
+                    <tr key={key}>
+                      <td>{iface.target ?? "--"}</td>
+                      <td>{iface.mac ?? "--"}</td>
+                      <td>{cleanedAddresses.length ? cleanedAddresses.join(", ") : "--"}</td>
+                      <td>{iface.stats ? `${rxBytes} (${rxPackets} pkts)` : "--"}</td>
+                      <td>{iface.stats ? `${txBytes} (${txPackets} pkts)` : "--"}</td>
+                      <td>{iface.stats ? errorCount : "--"}</td>
+                    </tr>,
+                  ];
+                }
+                return [
+                  <tr key={`${key}-ipv4`}>
+                    <td rowSpan={2}>{iface.target ?? "--"}</td>
+                    <td rowSpan={2}>{iface.mac ?? "--"}</td>
+                    <td>{`IPv4: ${ipv4.join(", ")}`}</td>
+                    <td rowSpan={2}>{iface.stats ? `${rxBytes} (${rxPackets} pkts)` : "--"}</td>
+                    <td rowSpan={2}>{iface.stats ? `${txBytes} (${txPackets} pkts)` : "--"}</td>
+                    <td rowSpan={2}>{iface.stats ? errorCount : "--"}</td>
+                  </tr>,
+                  <tr key={`${key}-ipv6`}>
+                    <td>{`IPv6: ${ipv6.join(", ")}`}</td>
+                  </tr>,
+                ];
               })}
             </tbody>
           </table>
@@ -1188,7 +1378,16 @@ export function VirtualHostDetailsPage() {
       return (
         <div className="metric-grid">
           <div className="metric-card">
-            <div className="metric-card__label">Total Assigned</div>
+            <div className="metric-card__label">Max Memory</div>
+            <div className="metric-card__value">
+              {guestMemoryMetrics.maxMb != null ? formatMemory(guestMemoryMetrics.maxMb) : "--"}
+            </div>
+            {memoryCardMeta?.max?.length ? (
+              <div className="metric-card__meta">{memoryCardMeta.max.join(" · ")}</div>
+            ) : null}
+          </div>
+          <div className="metric-card">
+            <div className="metric-card__label">Total Memory</div>
             <div className="metric-card__value">
               {guestMemoryMetrics.totalMb != null ? formatMemory(guestMemoryMetrics.totalMb) : "--"}
             </div>
@@ -1206,7 +1405,7 @@ export function VirtualHostDetailsPage() {
             ) : null}
           </div>
           <div className="metric-card">
-            <div className="metric-card__label">Unused Memory</div>
+            <div className="metric-card__label">Free Memory</div>
             <div className="metric-card__value">
               {guestMemoryMetrics.freeMb != null ? formatMemory(guestMemoryMetrics.freeMb) : "--"}
             </div>
@@ -1215,7 +1414,7 @@ export function VirtualHostDetailsPage() {
             ) : null}
           </div>
           <div className="metric-card">
-            <div className="metric-card__label">Available to Guest</div>
+            <div className="metric-card__label">Available Memory</div>
             <div className="metric-card__value">
               {guestMemoryMetrics.availableMb != null ? formatMemory(guestMemoryMetrics.availableMb) : "--"}
             </div>
@@ -1364,6 +1563,9 @@ export function VirtualHostDetailsPage() {
                 <button type="button" onClick={handleConnect} disabled={!canConnect}>
                   Connect
                 </button>
+                <button type="button" onClick={handleOpenMigrate} disabled={!canMigrate}>
+                  Migrate
+                </button>
                 <button type="button" onClick={() => setIsCloneModalOpen(true)} disabled={!canCloneDomain || isCloneBusy}>
                   Clone
                 </button>
@@ -1406,23 +1608,12 @@ export function VirtualHostDetailsPage() {
                 <div className="summary-grid__label">vCPUs</div>
               </div>
               <div>
-                <div className="summary-grid__value">
-                  {memoryCurrent}
-                  {memoryMax !== "--" ? ` / ${memoryMax}` : ""}
-                </div>
-                <div className="summary-grid__label">Memory (current / max)</div>
+                <div className="summary-grid__value">{memoryUsage}</div>
+                <div className="summary-grid__label">Memory (used / total)</div>
               </div>
               <div>
-                <div className="summary-grid__value">{cpuTime}</div>
-                <div className="summary-grid__label">CPU Time (dominfo)</div>
-              </div>
-              <div>
-                <div className="summary-grid__value">{cpuTimeStat}</div>
-                <div className="summary-grid__label">CPU Time (stats)</div>
-              </div>
-              <div>
-                <div className="summary-grid__value">{displayUptime}</div>
-                <div className="summary-grid__label">Estimated uptime</div>
+                <div className="summary-grid__value">{displayGuestUptime}</div>
+                <div className="summary-grid__label">Guest uptime</div>
               </div>
               <div>
                 <div className="summary-grid__value">
@@ -1538,6 +1729,26 @@ export function VirtualHostDetailsPage() {
       setShouldReconnectConsole(false);
     }}
     powerControls={consolePowerControls}
+  />
+
+  <MoveGuestsModal
+    isOpen={isMigrateModalOpen && migrateTargets.length > 0}
+    targets={migrateTargets}
+    availableHosts={migrateHostCandidates}
+    selectedHost={migrateTargetHost}
+    actionLabel="Migrate"
+    actionProgressLabel="Migrating…"
+    migrationMode={migrateMode}
+    startAfterMigration={migrateStartGuest}
+    isSubmitting={isMigrating}
+    error={migrateError}
+    onTargetHostChange={setMigrateTargetHost}
+    onMigrationModeChange={setMigrateMode}
+    onStartAfterMigrationChange={setMigrateStartGuest}
+    onClose={handleCancelMigrate}
+    onConfirm={() => {
+      void handleConfirmMigrate();
+    }}
   />
 
   {isCloneModalOpen && (

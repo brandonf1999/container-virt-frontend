@@ -293,6 +293,8 @@ export type VirtualMachine = {
     vcpu_count?: number | null;
     memory_mb?: number | null;
     max_memory_mb?: number | null;
+    total_memory_mb?: number | null;
+    used_memory_mb?: number | null;
     cpu_time_seconds?: number | null;
     uptime_seconds?: number | null;
   } | null;
@@ -353,6 +355,20 @@ export type DomainInterface = {
   addresses?: Array<Record<string, unknown>>;
 };
 
+export type MemorySummary = {
+  unit?: string | null;
+  max_mb?: number | null;
+  max_source?: string | null;
+  total_mb?: number | null;
+  total_source?: string | null;
+  used_mb?: number | null;
+  used_source?: string | null;
+  free_mb?: number | null;
+  free_source?: string | null;
+  available_mb?: number | null;
+  available_source?: string | null;
+};
+
 export type DomainDetails = {
   name: string;
   uuid?: string | null;
@@ -366,6 +382,8 @@ export type DomainDetails = {
   block_devices?: DomainBlockDevice[];
   interfaces?: DomainInterface[];
   memory_stats?: Record<string, number>;
+  memory_summary?: MemorySummary;
+  guest_uptime_seconds?: number | null;
   filesystems?: Array<Record<string, unknown>>;
   stats?: Record<string, unknown>;
   errors?: string[];
@@ -398,6 +416,7 @@ export type CreateGuestPayload = {
   name: string;
   vcpus: number;
   memory_mb: number;
+  cpu_mode?: "host-model" | "host-passthrough";
   autostart?: boolean;
   start?: boolean;
   description?: string | null;
@@ -454,6 +473,7 @@ export type ConsoleSession = {
 
 export type GuestMoveRequest = {
   target_host: string;
+  mode?: "live" | "cold";
   start?: boolean;
   shutdown_timeout?: number;
   force?: boolean;
